@@ -377,10 +377,15 @@ function isProxiedPath(path) {
 }
 
 function rewriteAbsoluteUrls(text, sid) {
-  return String(text).replace(/(?:https?:)?\/\/([a-z0-9.-]+(?::\d+)?)/gi, (match, host) => {
-    if (!isAllowedHostname(host.split(':')[0])) return match;
-    return proxyHostBase(sid, host);
-  });
+  return String(text).replace(/((?:https?):)?\/\/([a-z0-9.-]+(?::\d+)?)/gi,
+    (match, scheme, host, offset, source) => {
+      if (!scheme) {
+        const before = source.slice(Math.max(0, offset - 12), offset).toLowerCase();
+        if (/(?:https?:|https?%3a|%3a)$/.test(before)) return match;
+      }
+      if (!isAllowedHostname(host.split(':')[0])) return match;
+      return proxyHostBase(sid, host);
+    });
 }
 
 function rewriteRootRelative(text, sid, host, mode) {
@@ -424,6 +429,26 @@ function rewriteRootRelative(text, sid, host, mode) {
   return out;
 }
 
+function rewriteEncodedHtml(text, sid, host) {
+  return String(text).replace(
+    /(["'])((?:%[0-9a-f]{2}|%u[0-9a-f]{4}|[^"'\\\r\n]){32,})\1/gi,
+    (match, quote, value) => {
+      if (!/%3c(?:!doctype|html|head|body|script|link|meta)/i.test(value)) return match;
+      let decoded;
+      try {
+        decoded = unescape(value);
+      } catch (e) {
+        return match;
+      }
+      if (!/<(?:!doctype|html|head|body|script|link|meta)\b/i.test(decoded)) return match;
+      let rewritten = rewriteAbsoluteUrls(decoded, sid);
+      rewritten = rewriteRootRelative(rewritten, sid, host, 'html');
+      rewritten = rewriteAbsoluteUrls(rewritten, sid);
+      return `${quote}${escape(rewritten)}${quote}`;
+    },
+  );
+}
+
 function runtimeScript(sid, currentHost) {
   const rootPrefix = `${LOGIN_PROXY_PREFIX}${sid}`;
   const currentBase = proxyHostBase(sid, currentHost);
@@ -454,6 +479,14 @@ try {
       set:function(v){cookieValue=String(v||'').split(';')[0]}
     }); } catch(_e) {}
   }
+  try {
+    var currentDomain=document.domain;
+    Object.defineProperty(document,'domain',{
+      configurable:true,
+      get:function(){return currentDomain},
+      set:function(){}
+    });
+  } catch(e) {}
   var SELF=new URL(location.href).origin;
   var ROOT='${rootPrefix}';
   var CURRENT='${currentBase}';
@@ -555,24 +588,29 @@ function injectRuntime(html, sid, currentHost) {
 function rewriteContent(text, contentType, sid, host) {
   const ct = String(contentType || '').toLowerCase();
   let out = String(text);
-  out = rewriteAbsoluteUrls(out, sid);
   if (ct.includes('text/html') || ct.includes('application/xhtml+xml')) {
+    out = rewriteAbsoluteUrls(out, sid);
     out = rewriteRootRelative(out, sid, host, 'html');
     out = rewriteAbsoluteUrls(out, sid);
     return injectRuntime(out, sid, host);
   }
   if (ct.includes('javascript') || ct.includes('ecmascript')) {
-    out = rewriteRootRelative(out, sid, host, 'js');
-    return rewriteAbsoluteUrls(out, sid);
+    // JavaScript 只处理能明确识别为百分号编码 HTML 的载荷。普通脚本必须
+    // 原样返回：全局替换 URL 会误伤正则、注释和用于业务判断的原始地址。
+    // 运行时请求由注入脚本统一改写到代理路径。
+    return rewriteEncodedHtml(out, sid, host);
   }
   if (ct.includes('text/css')) {
+    out = rewriteAbsoluteUrls(out, sid);
     out = rewriteRootRelative(out, sid, host, 'css');
     return rewriteAbsoluteUrls(out, sid);
   }
   if (ct.includes('json') || ct.includes('xml') || ct.includes('svg')) {
+    out = rewriteAbsoluteUrls(out, sid);
     out = rewriteRootRelative(out, sid, host, 'js');
     return rewriteAbsoluteUrls(out, sid);
   }
+  out = rewriteAbsoluteUrls(out, sid);
   return out;
 }
 

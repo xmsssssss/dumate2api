@@ -47,7 +47,7 @@ test('代理路径解析拒绝畸形 sid 和主机', () => {
   assert.equal(proxy.parseProxyPath('/api/admin/web-accounts/login/proxy/no-scheme'), null);
 });
 
-test('HTML/JS/CSS 根路径与绝对地址改写回代理', () => {
+test('HTML/CSS 根路径与绝对地址改写回代理，普通 JavaScript 保持不变', () => {
   const html = proxy.rewriteContent(
     '<html><head></head><body><a href="/passport">x</a><img src="https://passport.baidu.com/a.png"></body></html>',
     'text/html; charset=utf-8',
@@ -59,14 +59,13 @@ test('HTML/JS/CSS 根路径与绝对地址改写回代理', () => {
   assert.match(html, /function mapUrl/);
   assert.match(html, /_status/);
 
-  const js = proxy.rewriteContent(
-    'fetch("/api/login"); fetch("https://passport.baidu.com/check");',
+  const js = 'fetch("/api/login"); fetch("https://passport.baidu.com/check");';
+  assert.equal(proxy.rewriteContent(
+    js,
     'application/javascript',
     SID,
     'login.bce.baidu.com',
-  );
-  assert.match(js, new RegExp(`/login/proxy/${SID}/https/login\\.bce\\.baidu\\.com/api/login`));
-  assert.match(js, new RegExp(`/login/proxy/${SID}/https/passport\\.baidu\\.com/check`));
+  ), js);
 
   const css = proxy.rewriteContent(
     'body{background:url("/static/bg.png")}',
@@ -75,6 +74,21 @@ test('HTML/JS/CSS 根路径与绝对地址改写回代理', () => {
     'passport.baidu.com',
   );
   assert.match(css, new RegExp(`/login/proxy/${SID}/https/passport\\.baidu\\.com/static/bg\\.png`));
+});
+
+test('普通 JavaScript 中的正则、Cookie 路径和注释不会被改写', () => {
+  const source = [
+    '// https://passport.baidu.com/keep-comment',
+    'var absolute=/https?:\\/\\/passport\\.baidu\\.com\\/check/g;',
+    'var relative=/(^|;)\\s*path=\\//;',
+    'document.cookie="sid=1; path=/; secure";',
+    'fetch("/api/login"); fetch("https://passport.baidu.com/check");',
+  ].join('\n');
+
+  assert.equal(
+    proxy.rewriteContent(source, 'application/javascript; charset=utf-8', SID, 'login.bce.baidu.com'),
+    source,
+  );
 });
 
 test('已代理资源不会被根路径或重复改写再次嵌套', () => {
@@ -90,6 +104,25 @@ test('已代理资源不会被根路径或重复改写再次嵌套', () => {
 
   const js = `fetch("${target}");`;
   assert.equal(proxy.rewriteContent(js, 'application/javascript', SID, 'login.bce.baidu.com'), js);
+});
+
+test('百分号编码 HTML 不会生成 https://api 或嵌套代理地址', () => {
+  const target = `${proxy.LOGIN_PROXY_PREFIX}${SID}/https/bce.bdstatic.com/fe-static/console/index.js`;
+  const source = `var h='%3Cscript%20src%3D%22https%3A//bce.bdstatic.com/fe-static/console/index.js%22%3E%3C/script%3E';document.write(unescape(h));`;
+  const rewritten = proxy.rewriteContent(
+    source,
+    'application/javascript',
+    SID,
+    'bce.bdstatic.com',
+  );
+  const payload = rewritten.match(/var h='([^']+)'/);
+  assert.ok(payload);
+
+  const decoded = unescape(payload[1]);
+  assert.equal(decoded.split(target).length - 1, 1);
+  assert.match(decoded, new RegExp(`src="${target}"`));
+  assert.doesNotMatch(decoded, /https:\/\/api\//);
+  assert.doesNotMatch(decoded, /\/https\/bce\.bdstatic\.com\/fe-static\/console\/index\.js.*\/https\/bce\.bdstatic\.com\//);
 });
 
 test('会话成功后凭证可读多次但只能取走一次', () => {
