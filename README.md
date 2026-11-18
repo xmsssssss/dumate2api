@@ -96,7 +96,31 @@ docker compose up -d
 
 ### 容器中的账号登录
 
-容器没有图形桌面，需要本机图形浏览器的抓取流程不可用。DuMate 可优先使用管理端的“手动粘贴 Cookie”，或把桌面环境已登录的 `web-accounts.json` 迁移到 `./data`。其他通道优先使用 OAuth、认证文件导入或 Token 粘贴。
+容器不需要图形桌面。DuMate 账号管理提供两种适合远程部署的方式：
+
+- **浏览器登录（推荐）**：管理端点“浏览器登录”后，由服务端登录代理打开百度登录页；完成短信或账号登录后，Cookie 会回到容器内的账号池，不依赖宿主机安装浏览器。
+- **桌面端认证文件上传**：在已登录 DuMate 的电脑上打开 `%APPDATA%\qianfan-desktop-app`，上传 `auth.json` 与 `.cookie-key`。服务端解密后只保存可用的登录 Cookie，原文件不会落盘。
+
+登录代理和账号上游共用 `DUMATE_PROXY`。如果百度需要经代理访问，请在 `.env` 中配置容器内可达的代理地址：
+
+```dotenv
+DUMATE_PROXY=http://172.17.0.1:7897
+```
+
+容器里的 `127.0.0.1` 指容器自身，不能直接访问宿主机代理。Linux 可用 Docker 网桥地址（常见为 `172.17.0.1`）或宿主机内网地址；macOS / Windows 可使用 `host.docker.internal`。代理也可直接填远端 HTTP 代理。修改后必须重建并重启容器：
+
+```bash
+docker compose up -d --build
+docker compose logs -f dumate2api
+```
+
+若登录代理返回 `502`，页面会显示目标域名和 Node 错误码：
+
+- `ENOTFOUND` / `EAI_AGAIN`：容器 DNS 或代理域名解析失败。
+- `ECONNREFUSED`：代理地址不可达，或代理端口写错。
+- `ETIMEDOUT` / `ECONNRESET`：容器到代理的网络超时，或被代理主动断开。
+
+只重启旧容器不会更新镜像；拉取新代码后要使用 `docker compose up -d --build`。
 
 ## 首次登录与 API Key
 
@@ -273,7 +297,7 @@ start-dev.bat
 | `DUMATE_QWENWORK_AUTOSTART` / `DUMATE_TRAEWORK_AUTOSTART` / `DUMATE_QODER_AUTOSTART` | `auto` | 设为 `off` 可关闭对应通道自动启动 |
 | `DUMATE_AUTO_CHECKIN_HOUR` / `DUMATE_AUTO_CHECKIN_MINUTE` | `9` / `17` | 每日自动签到时间，两个变量需同时设置 |
 | `DUMATE_CORS_ORIGINS` | 空 | 管理端 CORS 白名单；默认为 fail-closed |
-| `DUMATE_PROXY` | 空 | 全局出站代理 |
+| `DUMATE_PROXY` | 空 | 全局出站代理；同时用于账号上游和网页登录代理 |
 
 完整变量表与通道协议说明见 [CLAUDE.md](CLAUDE.md) 和 `docs/CHANNEL-*.md`。
 

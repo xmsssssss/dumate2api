@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
+const proxyAgent = require('./proxy-agent');
 
 const LOGIN_PROXY_PREFIX = '/api/admin/web-accounts/login/proxy/';
 const SESSION_TTL_MS = 15 * 60 * 1000;
@@ -29,6 +30,15 @@ const ALLOWED_SUFFIXES = [
   'dumate.cn',
   'baidubce.com',
 ];
+const TELEMETRY_HOSTS = new Set([
+  'hm.baidu.com',
+  'nsclick.baidu.com',
+]);
+const SILENT_BACKGROUND_REQUESTS = new Map([
+  ['cloud.baidu.com/404.html', 'image'],
+  ['cas.baidu.com/ucaction/collectlog', 'image'],
+  ['passport.baidu.com/error.html', 'script'],
+]);
 
 const sessions = new Map();
 
@@ -293,6 +303,12 @@ function requestJar(session, targetUrl, headers, redirects = 0) {
     if (redirects > 5) return reject(new Error('上游重定向次数过多'));
     const u = new URL(String(targetUrl));
     if (!isAllowedUrl(u)) return reject(new Error('登录代理目标不在白名单内'));
+    let agent;
+    try {
+      agent = proxyAgent.getAgentFor(null);
+    } catch (e) {
+      return reject(new Error(`出站代理配置错误：${e.message}`));
+    }
     const cookie = cookieHeaderFor(session, u);
     const reqHeaders = {
       'user-agent': 'Mozilla/5.0 dumate2api login proxy',
@@ -302,7 +318,12 @@ function requestJar(session, targetUrl, headers, redirects = 0) {
       host: u.host,
     };
     if (cookie) reqHeaders.cookie = cookie;
-    const req = https.request(u, { method: 'GET', headers: reqHeaders, timeout: 20000 }, (up) => {
+    const req = https.request(u, {
+      method: 'GET',
+      headers: reqHeaders,
+      timeout: 20000,
+      ...(agent ? { agent } : {}),
+    }, (up) => {
       const chunks = [];
       let size = 0;
       up.on('data', (chunk) => {
@@ -505,7 +526,7 @@ try {
       if(u.pathname.indexOf(ROOT)===0) return u.href;
       return SELF+CURRENT+u.pathname+u.search+u.hash;
     }
-    if(u.protocol==='https:'&&!u.port||u.port==='443'){
+    if((u.protocol==='https:'||u.protocol==='http:')&&(!u.port||u.port==='443')){
       if(allowedHost(u.hostname)) return SELF+ROOT+'/https/'+u.host+u.pathname+u.search+u.hash;
     }
     return s;
@@ -536,10 +557,33 @@ try {
   try{
     var origSetAttribute=Element.prototype.setAttribute;
     Element.prototype.setAttribute=function(name,value){
-      if(/^(href|src|action|poster)$/i.test(name)) value=mapUrl(value);
+      if(/^(href|src|action|poster|data|srcset)$/i.test(name)) value=mapUrl(value);
       return origSetAttribute.call(this,name,value);
     };
   }catch(e){}
+  function patchUrlProperty(ctor,name){
+    try{
+      if(!ctor||!ctor.prototype)return;
+      var d=Object.getOwnPropertyDescriptor(ctor.prototype,name);
+      if(!d||!d.get||!d.set)return;
+      Object.defineProperty(ctor.prototype,name,{
+        configurable:d.configurable,
+        enumerable:d.enumerable,
+        get:d.get,
+        set:function(value){return d.set.call(this,mapUrl(value))}
+      });
+    }catch(e){}
+  }
+  patchUrlProperty(window.HTMLImageElement,'src');
+  patchUrlProperty(window.HTMLScriptElement,'src');
+  patchUrlProperty(window.HTMLIFrameElement,'src');
+  patchUrlProperty(window.HTMLLinkElement,'href');
+  patchUrlProperty(window.HTMLAnchorElement,'href');
+  patchUrlProperty(window.HTMLFormElement,'action');
+  patchUrlProperty(window.HTMLMediaElement,'src');
+  patchUrlProperty(window.HTMLSourceElement,'src');
+  patchUrlProperty(window.HTMLVideoElement,'poster');
+  patchUrlProperty(window.HTMLObjectElement,'data');
   document.addEventListener('submit',function(e){
     var f=e.target;
     if(f&&f.getAttribute){
@@ -552,8 +596,10 @@ try {
       nodes.forEach(function(n){
         [].forEach.call(n.addedNodes||[],function(el){
           if(!el.querySelectorAll)return;
-          el.querySelectorAll('[src],[href],[action],[poster]').forEach(function(x){
-            ['src','href','action','poster'].forEach(function(a){
+          [el].concat(Array.prototype.slice.call(
+            el.querySelectorAll('[src],[href],[action],[poster],[data],[srcset]')
+          )).forEach(function(x){
+            ['src','href','action','poster','data','srcset'].forEach(function(a){
               var v=x.getAttribute(a);if(v)x.setAttribute(a,mapUrl(v));
             });
           });
@@ -614,6 +660,18 @@ function rewriteContent(text, contentType, sid, host) {
   return out;
 }
 
+function isJsonpResponse(target, contentType, body) {
+  const ct = String(contentType || '');
+  if (!/(?:text\/(?:html|plain)|application\/(?:json|javascript)|javascript)/i.test(ct)) {
+    return false;
+  }
+  const callback = String(target.searchParams.get('callback') || '').trim();
+  if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(callback)) return false;
+  const prefix = `${callback}(`;
+  const text = body.toString('utf8').replace(/^\uFEFF/, '').trimStart();
+  return text.startsWith(prefix);
+}
+
 function decodeBody(buffer, encoding) {
   const enc = String(encoding || '').toLowerCase();
   if (!enc || enc === 'identity') return buffer;
@@ -645,11 +703,47 @@ function corsHeaders(req) {
 }
 
 function writeError(req, res, status, message) {
-  const body = `<!doctype html><meta charset="utf-8"><title>登录代理错误</title><p>${message}</p>`;
+  const escaped = String(message || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  const body = `<!doctype html><meta charset="utf-8"><title>登录代理错误</title><p>${escaped}</p>`;
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     'Content-Security-Policy': 'sandbox allow-scripts',
+    ...corsHeaders(req),
+  });
+  res.end(body);
+}
+
+function upstreamErrorMessage(target, err) {
+  const e = err || {};
+  const code = e.code ? `[${e.code}] ` : '';
+  const message = e.message || String(e);
+  return `上游请求失败（${target.host}）：${code}${message}`;
+}
+
+function isTelemetryRequest(target) {
+  return TELEMETRY_HOSTS.has(String(target.hostname || '').toLowerCase());
+}
+
+function silentBackgroundKind(target) {
+  const host = String(target.hostname || '').toLowerCase();
+  const key = `${host}${target.pathname || ''}`;
+  return SILENT_BACKGROUND_REQUESTS.get(key) || '';
+}
+
+function writeTelemetry(req, res, target) {
+  const isScript = silentBackgroundKind(target) === 'script'
+    || /\.js$/i.test(target.pathname || '');
+  const body = isScript ? '/* analytics disabled by login proxy */' : '';
+  res.writeHead(isScript ? 200 : 204, {
+    'Content-Type': isScript ? 'application/javascript; charset=utf-8' : 'image/gif',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
     ...corsHeaders(req),
   });
   res.end(body);
@@ -673,6 +767,9 @@ function handleProxy(req, res, pathname) {
     return writeError(req, res, 400, '上游地址不合法');
   }
   if (!isAllowedUrl(target)) return writeError(req, res, 403, '上游域名不在登录代理白名单内');
+  if (isTelemetryRequest(target) || silentBackgroundKind(target)) {
+    return writeTelemetry(req, res, target);
+  }
 
   const len = Number(req.headers['content-length'] || 0);
   if (Number.isFinite(len) && len > MAX_REQUEST_BODY) {
@@ -701,10 +798,18 @@ function handleProxy(req, res, pathname) {
   else delete headers.referer;
   if (req.headers.origin) headers.origin = target.origin;
 
+  let agent;
+  try {
+    agent = proxyAgent.getAgentFor(null);
+  } catch (e) {
+    return writeError(req, res, 502, `出站代理配置错误：${e.message}`);
+  }
+
   const upstream = https.request(target, {
     method: req.method,
     headers,
     timeout: 30000,
+    ...(agent ? { agent } : {}),
   }, (up) => {
     const chunks = [];
     let size = 0;
@@ -739,7 +844,10 @@ function handleProxy(req, res, pathname) {
       const contentType = String(up.headers['content-type'] || '');
       const textTypes = /(text\/|javascript|ecmascript|json|xml|svg)/i;
       let body = decoded;
-      if (textTypes.test(contentType)) {
+      let responseContentType = contentType;
+      if (isJsonpResponse(target, contentType, decoded)) {
+        responseContentType = 'application/javascript; charset=utf-8';
+      } else if (textTypes.test(contentType)) {
         body = Buffer.from(rewriteContent(decoded.toString('utf8'), contentType, session.id, target.host), 'utf8');
       }
 
@@ -763,12 +871,12 @@ function handleProxy(req, res, pathname) {
           delete out.location;
         }
       }
-      out['content-type'] = contentType || 'application/octet-stream';
+      out['content-type'] = responseContentType || 'application/octet-stream';
       out['content-length'] = body.length;
       out['cache-control'] = 'no-store';
       out['referrer-policy'] = 'no-referrer';
       out['x-content-type-options'] = 'nosniff';
-      if (/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+      if (/text\/html|application\/xhtml\+xml/i.test(responseContentType)) {
         out['content-security-policy'] = 'sandbox allow-scripts allow-forms allow-popups allow-downloads';
       }
       Object.assign(out, corsHeaders(req));
@@ -776,13 +884,13 @@ function handleProxy(req, res, pathname) {
       res.end(req.method === 'HEAD' ? undefined : body);
     });
     up.on('error', (e) => {
-      if (!res.headersSent) writeError(req, res, 502, `上游请求失败：${e.message}`);
+      if (!res.headersSent) writeError(req, res, 502, upstreamErrorMessage(target, e));
       else res.end();
     });
   });
   upstream.on('timeout', () => upstream.destroy(new Error('上游请求超时')));
   upstream.on('error', (e) => {
-    if (!res.headersSent) writeError(req, res, 502, `上游请求失败：${e.message}`);
+    if (!res.headersSent) writeError(req, res, 502, upstreamErrorMessage(target, e));
     else res.end();
   });
   req.pipe(upstream);
@@ -831,6 +939,7 @@ module.exports = {
   proxyUrl,
   rewriteContent,
   parseProxyPath,
+  isJsonpResponse,
   __test: {
     seedSessionCookiesForTest,
     expireSessionForTest(sid) {

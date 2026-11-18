@@ -1163,7 +1163,10 @@ const routes = [
     path: '/dashboard',
     handler: async ({ res }) => {
       const list = accounts.load().accounts;
-      const gatewayPort = parseInt(process.env.DUMATE_WEB_GATEWAY_PORT || '9084', 10);
+      const gatewayPort = parseInt(
+        process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '9080',
+        10,
+      );
 
       // 先补昵称再算指标：下面各处（健康快照、即将过期明细）都要用显示名，
       // 补完这一轮后续全部拿到真实昵称。**只对启用且昵称为空的账号**打上游，
@@ -1436,7 +1439,10 @@ const routes = [
       //
       // 惩罚态（冷却/熔断/禁用/余额快照）已随施工包 A 落盘到 pool-state.json,
       // 管理端能直接读——先吸纳网关 5s 防抖内新写的内容再出视图。
-      const gatewayPort = parseInt(process.env.DUMATE_WEB_GATEWAY_PORT || '9084', 10);
+      const gatewayPort = parseInt(
+        process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '9080',
+        10,
+      );
       accountPool.reloadIfChanged();
       const poolState = {
         counts: accountPool.counts(),
@@ -1456,7 +1462,7 @@ const routes = [
         checkin_result: (a.checkin && a.checkin.last_result) || '',
       }));
 
-      // 顺带探一下网关是否在跑，界面据此提示「先启动 9084」
+      // 顺带探一下网关是否在跑，界面据此提示先启动网关
       const req = require('http').request(
         { host: '127.0.0.1', port: gatewayPort, path: '/health', method: 'GET', timeout: 3000 },
         (r) => {

@@ -57,6 +57,8 @@ test('HTML/CSS 根路径与绝对地址改写回代理，普通 JavaScript 保�
   assert.match(html, new RegExp(`/login/proxy/${SID}/https/login\\.bce\\.baidu\\.com/passport`));
   assert.match(html, new RegExp(`/login/proxy/${SID}/https/passport\\.baidu\\.com/a\\.png`));
   assert.match(html, /function mapUrl/);
+  assert.match(html, /u\.protocol==='http:'/);
+  assert.match(html, /patchUrlProperty\(window\.HTMLImageElement,'src'\)/);
   assert.match(html, /_status/);
 
   const js = 'fetch("/api/login"); fetch("https://passport.baidu.com/check");';
@@ -74,6 +76,27 @@ test('HTML/CSS 根路径与绝对地址改写回代理，普通 JavaScript 保�
     'passport.baidu.com',
   );
   assert.match(css, new RegExp(`/login/proxy/${SID}/https/passport\\.baidu\\.com/static/bg\\.png`));
+});
+
+test('JSONP 检测只接受 callback 对应的响应体', () => {
+  const target = new URL(
+    'https://passport.baidu.com/v2/?getphonestatus&callback=bd__cbs__abc',
+  );
+  assert.equal(proxy.isJsonpResponse(
+    target,
+    'text/html',
+    Buffer.from('bd__cbs__abc({"ok":true})'),
+  ), true);
+  assert.equal(proxy.isJsonpResponse(
+    target,
+    'text/html',
+    Buffer.from('<html><body>not jsonp</body></html>'),
+  ), false);
+  assert.equal(proxy.isJsonpResponse(
+    new URL('https://passport.baidu.com/v2/?getphonestatus&callback=bad-name'),
+    'text/html',
+    Buffer.from('bad-name({"ok":true})'),
+  ), false);
 });
 
 test('普通 JavaScript 中的正则、Cookie 路径和注释不会被改写', () => {
