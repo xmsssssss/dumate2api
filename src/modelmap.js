@@ -337,10 +337,15 @@ function catalogExposed() {
     .map((id) => ({ id, meta: cat.models[id], verified: isVerifiedModel(id) }));
 }
 
-/** 清单来源与版本（管理端展示用；'desktop' / 'snapshot' / 'default' / 'none'） */
+/** 清单来源与版本（管理端展示用；origin 区分桌面同步与浏览器上传） */
 function catalogStatus() {
   const c = catalogEntry();
-  return { source: c.source, asOf: c.asOf, count: Object.keys(c.models).length };
+  return {
+    source: c.source,
+    origin: c.origin || 'none',
+    asOf: c.asOf,
+    count: Object.keys(c.models).length,
+  };
 }
 
 // 查不到就回落到 fallback（与改造前一致）。

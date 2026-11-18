@@ -22,8 +22,8 @@ const SRC = {
   upstream: '上游',
   measured: '实测',
   config: '配置',
-  // 桌面客户端模型清单（dumate-catalog）声明的值。**不是实测**——本仓只真机
-  // 验过 7 个云端路由名，清单里另外 15 个是客户端配置写的，界面必须分开标。
+  // DuMate 模型清单（dumate-catalog）声明的值。**不是实测**——来源可能是桌面
+  // 读取或浏览器上传，清单里的上下文/输出上限不能冒充实测值。
   desktop: '清单',
 };
 
@@ -33,7 +33,7 @@ const SRC = {
 // 直吐范围声明）、二分夹逼（GLM 只报「Prompt 超长」）、响应头
 // X-Dumate-Gw-Realmodel（real_model 埋点同源）。cloud 网关按模型转发，
 // 别名行的数据按**实际落到的 target** 查这张表。
-const DUMATE_NOTE = '上游无模型列表接口（/models 404），真实后端与上限来自真机实测（400 错误体明示 / 二分夹逼 / X-Dumate-Gw-Realmodel 响应头）；此外 qianfan/ 前缀走千帆原生透传通道（独立模型命名空间）。';
+const DUMATE_NOTE = '上游无模型列表接口（/models 404）；已实测的后端、上下文与输出上限来自真机验证（400 错误体 / 二分夹逼 / X-Dumate-Gw-Realmodel），其余字段来自 DuMate 模型清单声明且未实测；qianfan/ 前缀走千帆原生透传通道。';
 const DUMATE_REAL = {
   'model-text': {
     real: 'deepseek-v4.1-flash-low-latency',
@@ -103,6 +103,34 @@ function catalogRowsEnabled() {
   return cloudLink() && modelmap.catalogExposeEnabled();
 }
 
+function catalogSourceText(source, origin) {
+  if (origin === 'upload') return '上传导入';
+  if (source === 'desktop') return '桌面读取';
+  if (source === 'snapshot') return '本地快照';
+  if (source === 'default') return '内置默认';
+  return '不可用';
+}
+
+function dumateCatalogSummary() {
+  try {
+    const cat = require('./dumate-catalog').load();
+    return {
+      source: cat.source,
+      origin: cat.origin || 'none',
+      asOf: cat.asOf || '',
+      count: Object.keys(cat.models || {}).length,
+      excluded: Number(cat.excluded) || 0,
+      sourceAvailable: cat.sourceAvailable === true,
+      snapshotAvailable: cat.snapshotAvailable === true,
+    };
+  } catch (e) {
+    return {
+      source: 'none', origin: 'none', asOf: '', count: 0, excluded: 0,
+      sourceAvailable: false, snapshotAvailable: false,
+    };
+  }
+}
+
 function dumateRows() {
   const cfg = modelmap.load();
   const upstream = new Set(cfg.upstream_models);
@@ -136,6 +164,9 @@ function dumateRows() {
     // kimi-k31 手动加进 exposed 反而会让它在模型页显示「—」，而没加进
     // exposed 的同一行却显示清单值——同一份数据两种视图。
     const decl = real ? null : dumateCatalogOf(target);
+    const declSource = decl
+      ? catalogSourceText(decl.catalogSource, decl.catalogOrigin)
+      : '';
     // 倍率按**真实后端**取：同一后端的多个名字（model-text / deepseek-v41-flash /
     // text.L0 / mm.L0）必然同价，各查各的会出现「同一份价格四种数字」的错觉
     const backend = modelmap.backendOf(target);
@@ -167,7 +198,9 @@ function dumateRows() {
       contextSource: real ? 'measured' : (decl ? 'desktop' : null),
       contextNote: real
         ? real.contextNote
-        : (decl ? '桌面端模型清单声明，本仓未实测（清单存在 ≠ 有调用权限）' : '该模型未实测（上游不吐元数据，也没有 400 错误体可泄漏）'),
+        : (decl
+          ? `DuMate 模型清单声明（${declSource}${decl.catalogAsOf ? `，${decl.catalogAsOf}` : ''}），本仓未实测（清单存在 ≠ 有调用权限）`
+          : '该模型未实测（上游不吐元数据，也没有 400 错误体可泄漏）'),
       // 输出上限：上游真实范围（dumate-caps 同源实测），不是网关钳制下限。
       // 网关还有一层输出预算下限（65536，思维链兜底）——传小值会被抬高，
       // 但「上限」列回答的是上游接受多少，两个数不是一个问题。
@@ -175,7 +208,7 @@ function dumateRows() {
       maxTokensSource: real ? 'measured' : (decl ? 'desktop' : null),
       maxTokensNote: real
         ? (real.maxTokensNote || '网关另有输出预算下限 65536（思维链兜底），客户端传小值会被抬到下限')
-        : (decl ? '清单声明的输出上限；与上游 400 错误体的真值冲突时以后者为准（dumate-caps 优先）' : null),
+        : (decl ? 'DuMate 模型清单声明的输出上限；与上游 400 错误体的真值冲突时以后者为准（dumate-caps 优先）' : null),
       // 多模态：按**映射 target** 的档位语义判（dm-auto-model/mm.* 是上游自己的
       // 多模态命名空间）。2026-11-07 前这里硬编码 false——mm 档位一旦进暴露
       // 列表就会被标成纯文本，与它名字的语义相反。
@@ -220,6 +253,8 @@ function dumateRows() {
   }
   if (cat && cat.models) {
     const known = new Set(cfg.exposed);
+    const catLabel = catalogSourceText(cat.source, cat.origin);
+    const catDate = cat.asOf ? `，${cat.asOf}` : '';
     for (const id of Object.keys(cat.models).sort()) {
       if (known.has(id)) continue;
       const meta = cat.models[id];
@@ -246,10 +281,10 @@ function dumateRows() {
         contextWindow: lim.context || null,
         contextWindowMin: null,
         contextSource: 'desktop',
-        contextNote: `桌面端模型清单声明（${cat.asOf || '未标日期'}），本仓未实测`,
+        contextNote: `DuMate 模型清单声明（${catLabel}${catDate || '，未标日期'}），本仓未实测`,
         maxTokens: lim.output || null,
         maxTokensSource: 'desktop',
-        maxTokensNote: '清单声明的输出上限；与上游 400 错误体的真值冲突时以后者为准（dumate-caps 优先）',
+        maxTokensNote: 'DuMate 模型清单声明的输出上限；与上游 400 错误体的真值冲突时以后者为准（dumate-caps 优先）',
         multimodal: !!meta.attachment,
         multimodalSource: 'desktop',
         jsonMode: false,
@@ -261,8 +296,8 @@ function dumateRows() {
         reasoningEfforts: meta.variants ? Object.keys(meta.variants) : null,
         verified,
         note: verified
-          ? '桌面端清单条目；该名字在本仓实测集合里（云端网关 2026-11-06 真机 200）'
-          : '桌面端清单条目；本仓未实测过这个名字，客户端选它可能 404（清单存在 ≠ 有调用权限）',
+          ? `DuMate 模型清单条目（${catLabel}）；该名字在本仓实测集合里（云端网关 2026-11-06 真机 200）`
+          : `DuMate 模型清单条目（${catLabel}）；本仓未实测过这个名字，客户端选它可能 404（清单存在 ≠ 有调用权限）`,
       });
     }
   }
@@ -346,13 +381,18 @@ function dumateRealOf(target) {
  */
 function dumateCatalogOf(target) {
   try {
-    const meta = require('./dumate-catalog').get(target);
+    const catalog = require('./dumate-catalog');
+    const meta = catalog.get(target);
     if (!meta || !meta.limit) return null;
+    const cat = catalog.load();
     return {
       real: meta.id || target,
       context: meta.limit.context,
       maxTokens: meta.limit.output,
       catalog: true,
+      catalogSource: cat.source,
+      catalogOrigin: cat.origin,
+      catalogAsOf: cat.asOf || '',
       attachment: !!meta.attachment,
       reasoning: !!meta.reasoning,
       toolCall: meta.tool_call !== false,
@@ -667,7 +707,11 @@ async function rowsFor(channel, opts = {}) {
     // 路由**的行——清单候选（verified:false）是本仓没实测过的名字，自动
     // 写进 ANTHROPIC_DEFAULT_*_MODEL 可能直接 404（review #5）。
     // exposed 行没有 verified 字段（显式配置的别名，语义上总是可见），保留。
-    return { rows: opts.visibleOnly ? rows.filter((r) => r.verified !== false) : rows, error: '' };
+    return {
+      rows: opts.visibleOnly ? rows.filter((r) => r.verified !== false) : rows,
+      error: '',
+      catalog: dumateCatalogSummary(),
+    };
   }
   if (channel === 'qwenwork') {
     const rows = await qwenRows();

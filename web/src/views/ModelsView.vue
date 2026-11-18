@@ -598,17 +598,46 @@
 
     <!-- 模型信息：上下文 / 输出上限 / 类型。**没有倍率**——搭子的计费在
          上游账单里，本地拿不到单价，如实显示「无此数据」而不是估算一个 -->
-    <a-card :bordered="false">
+    <a-card :bordered="false" class="dumate-model-card">
       <template #title>
         <span class="section-title">模型信息</span>
         <a-tag class="ml-2" color="blue">只读</a-tag>
       </template>
       <template #extra>
-        <a-button size="small" class="ghost-btn mr-2" :loading="dmBillingChecking" @click="runDmBillingCheck">
+        <a-button size="small" class="ghost-btn" :loading="dmBillingChecking" @click="runDmBillingCheck">
           计费自检
         </a-button>
+        <a-upload
+          v-if="isAdmin"
+          :show-upload-list="false"
+          accept="application/json,.json"
+          :before-upload="importDumateCatalog"
+        >
+          <a-button size="small" class="ghost-btn" :loading="catalogImporting">
+            <UploadOutlined />
+            上传模型清单
+          </a-button>
+        </a-upload>
         <a-button size="small" class="ghost-btn" :loading="loading" @click="load">刷新</a-button>
       </template>
+      <div v-if="dumateCatalog" class="dumate-catalog-meta">
+        <a-tag :color="dumateCatalog.origin === 'upload' ? 'green' : 'blue'">
+          {{ catalogSourceText(dumateCatalog) }}
+        </a-tag>
+        <span>模型 <b class="num">{{ dumateCatalog.count }}</b> 个</span>
+        <span v-if="dumateCatalog.excluded">排除 <b class="num">{{ dumateCatalog.excluded }}</b> 个内部路由</span>
+        <span v-if="dumateCatalog.asOf">清单日期 {{ dumateCatalog.asOf }}</span>
+      </div>
+      <div class="dumate-catalog-hint">
+        <template v-if="isAdmin">
+          远程部署无法读取你电脑上的 DuMate 配置。请登录 DuMate 后上传内嵌配置：
+          <span class="font-mono">%APPDATA%\qianfan-desktop-app\qianfan_desk_xdg\&lt;账号&gt;\config\opencode\opencode.json</span>。
+          不要上传独立 OpenCode 软件的 <span class="font-mono">.config\opencode\opencode.json</span>。
+        </template>
+        <template v-else>
+          当前清单来自 {{ catalogSourceText(dumateCatalog) }}；上传配置需要管理员权限。
+        </template>
+      </div>
       <ModelInfoTable :channel="'dumate'" :preloaded="dumateInfoRows" />
       <!-- 计费自检结果：搭子没有标称倍率，只有实测「每千 token 积分成本」
            （网页余额差值口径，与 chatlab 的消耗同源）。cost=null 是「没测到」
@@ -939,8 +968,10 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { message } from 'ant-design-vue'
+import { UploadOutlined } from '@ant-design/icons-vue'
 import client from '@/api/client'
 import { channelStore, isTraework, isQwenwork, isQoder, isWorkBuddy } from '@/stores/channel'
+import { isAdmin } from '@/stores/auth'
 import { regionStore, regionParam, isIntlRegion } from '@/stores/region'
 import { qwenworkApi } from '@/api/qwenwork'
 import { traeworkApi } from '@/api/traework'
@@ -951,7 +982,7 @@ import type { QwCredits } from '@/api/qwenwork'
 import type { ModelMapData, ProbeResult } from '@/api/models'
 import type { SystemStatus } from '@/api/system'
 import type { PointsData } from '@/api/points'
-import { modelInfoApi, type ModelInfoRow } from '@/api/modelinfo'
+import { modelInfoApi, type DumateCatalogMeta, type ModelInfoRow } from '@/api/modelinfo'
 import ModelInfoTable from '@/components/ModelInfoTable.vue'
 
 interface Row {
@@ -1124,6 +1155,43 @@ const twRateNote = ref('')
 const twInfoRows = ref<ModelInfoRow[] | null>(null)
 const qwInfoRows = ref<ModelInfoRow[] | null>(null)
 const dumateInfoRows = ref<ModelInfoRow[] | null>(null)
+const dumateCatalog = ref<DumateCatalogMeta | null>(null)
+const catalogImporting = ref(false)
+
+const MAX_CATALOG_BYTES = 256 * 1024
+
+function catalogSourceText(catalog: DumateCatalogMeta | null) {
+  if (!catalog) return '不可用'
+  if (catalog.origin === 'upload') return '上传导入'
+  if (catalog.source === 'desktop') return '桌面读取'
+  if (catalog.source === 'snapshot') return '本地快照'
+  if (catalog.source === 'default') return '内置默认'
+  return '不可用'
+}
+
+async function importDumateCatalog(file: File) {
+  if (!isAdmin.value) {
+    message.error('只有管理员可以上传 DuMate 模型清单')
+    return false
+  }
+  if (file.size > MAX_CATALOG_BYTES) {
+    message.error('配置文件超过 256 KB')
+    return false
+  }
+  catalogImporting.value = true
+  try {
+    const content = await file.text()
+    const { data } = await modelInfoApi.importCatalog(content, file.name)
+    message.success(`已解析并导入 ${data.count} 个模型，排除 ${data.excluded} 个内部路由`)
+    await load()
+    await channelStore.load()
+  } catch (e: any) {
+    message.error(e?.response?.data?.error || e?.message || '模型清单导入失败')
+  } finally {
+    catalogImporting.value = false
+  }
+  return false
+}
 
 // 搭子的可读名与别名目标：来自 /models/info?channel=dumate（后端已按
 // modelmap.displayName + 实际 target 给好），这里只做查表——前端不重复维护
@@ -1536,6 +1604,7 @@ async function load() {
     ])
     const data = mapRes.data
     dumateInfoRows.value = info.data.rows || []
+    dumateCatalog.value = (info.data as { catalog?: DumateCatalogMeta }).catalog || null
     dumateSys.value = sys.data
     dumatePoints.value = pts.data
     dumateTodayCost.value = usg.data?.cards?.today?.consumed_points ?? null
@@ -1717,5 +1786,40 @@ watch(() => regionStore.current, async () => {
 .qw-model-usage {
   font-size: 13px;
   color: var(--lab-text);
+}
+.dumate-catalog-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 8px;
+  color: var(--lab-text-sub);
+  font-size: 12px;
+}
+.dumate-catalog-hint {
+  margin-bottom: 12px;
+  color: var(--lab-text-mute);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.dumate-model-card :deep(.ant-card-head-wrapper) {
+  align-items: flex-start;
+}
+.dumate-model-card :deep(.ant-card-extra) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+@media (max-width: 640px) {
+  .dumate-model-card :deep(.ant-card-head-wrapper) {
+    flex-wrap: wrap;
+  }
+  .dumate-model-card :deep(.ant-card-extra) {
+    width: 100%;
+    margin-left: 0;
+    padding-top: 8px;
+    justify-content: flex-start;
+  }
 }
 </style>

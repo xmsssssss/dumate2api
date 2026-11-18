@@ -37,6 +37,7 @@ const path = require('path');
 
 const DATA_DIR = process.env.DUMATE_ADMIN_DATA || path.resolve(__dirname, '..', 'data');
 const SNAPSHOT = 'dumate-catalog.json';
+const MAX_IMPORT_BYTES = 256 * 1024;
 // 包内默认放在 src/（与代码同目录）：data/ 被 gitignore，放那里不会入库，
 // 干净检出的第三级降级会直接落到 source:'none'。
 const DEFAULT_FILE = path.join(__dirname, 'dumate-catalog.default.json');
@@ -134,6 +135,17 @@ function importModels(config) {
   return { schema: 1, models, excluded };
 }
 
+function configError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function today() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
 function readJson(p, maxBytes) {
   const st = fs.statSync(p);
   if (!st.isFile() || st.size <= 0 || st.size > (maxBytes || 2 * 1024 * 1024)) {
@@ -159,8 +171,56 @@ function writeSnapshot(catalog) {
 let cache = { at: 0, mtime: 0, srcMtime: 0, data: null };
 
 /**
- * 读清单。返回 `{ models, source, asOf, excluded }`：
+ * 浏览器上传的 DuMate opencode.json：只在服务端解析，快照里只落筛选后的
+ * 模型元数据。`origin: "upload"` 让这份快照优先于桌面自动同步，避免远程
+ * Docker 部署再次被宿主上不存在的桌面配置接管。
+ */
+function importFromConfig(content) {
+  const text = typeof content === 'string' ? content : '';
+  if (!text.trim()) throw configError('empty_config', '上传内容为空');
+  if (Buffer.byteLength(text, 'utf8') > MAX_IMPORT_BYTES) {
+    throw configError('config_too_large', '配置文件超过 256 KB');
+  }
+
+  let config;
+  try {
+    config = JSON.parse(text);
+  } catch (e) {
+    throw configError('invalid_json', '配置文件不是有效的 JSON');
+  }
+
+  const provider = config && config.provider && config.provider.QianfanPersonalQuota;
+  if (!provider || !provider.models || typeof provider.models !== 'object' || Array.isArray(provider.models)) {
+    throw configError(
+      'not_dumate_config',
+      '这不是 DuMate 模型配置，请勿上传独立 OpenCode 的 .config/opencode/opencode.json',
+    );
+  }
+
+  const imported = importModels(config);
+  const asOf = today();
+  writeSnapshot({
+    schema: 1,
+    origin: 'upload',
+    models: imported.models,
+    excluded: imported.excluded,
+    asOf,
+  });
+  resetCache();
+  return {
+    ok: true,
+    origin: 'upload',
+    count: Object.keys(imported.models).length,
+    inputCount: Object.keys(provider.models).length,
+    excluded: imported.excluded,
+    asOf,
+  };
+}
+
+/**
+ * 读清单。返回 `{ models, source, origin, asOf, excluded, sourceAvailable, snapshotAvailable }`：
  *   source = 'desktop'（来自客户端配置）/ 'snapshot'（本地快照）/ 'default'（包内默认）
+ *   origin = 'desktop' / 'upload' / 'default' / 'none'
  * 任何一步失败都不会抛——降级到下一级，全失败时返回空表（调用方自行兜底）。
  */
 function load(env = process.env) {
@@ -172,30 +232,71 @@ function load(env = process.env) {
   const stamp = `${srcMtime}|${snapMtime}`;
   if (cache.data && cache.mtime === stamp) return cache.data;
 
+  let snap = null;
+  try { snap = readJson(filePath()); } catch (e) { /* 快照不存在或损坏 */ }
+  let snapshotAvailable = !!snap;
   let result = null;
-  // ① 客户端配置（真相源）
-  if (src) {
+  // ① 浏览器上传的快照优先。远程部署没有桌面配置，这条优先级不能反过来：
+  // 只要桌面自动同步能跑，它就会覆盖上传结果。
+  if (snap && snap.origin === 'upload') {
+    try {
+      result = {
+        models: fromSnapshot(snap),
+        excluded: snap.excluded || 0,
+        schema: 1,
+        source: 'snapshot',
+        origin: 'upload',
+        asOf: snap.asOf || '',
+      };
+    } catch (e) { /* 上传快照损坏时继续尝试桌面配置 */ }
+  }
+  // ② 客户端配置（真相源）
+  if (!result && src) {
     try {
       const imported = importModels(readJson(src));
-      result = { ...imported, source: 'desktop', asOf: '' };
+      result = { ...imported, source: 'desktop', origin: 'desktop', asOf: '' };
       // 变更才写快照（避免每次请求都写盘；内容比较在 saveIfChanged 里）
       saveIfChanged(imported);
+      try {
+        fs.statSync(filePath());
+        snapshotAvailable = true;
+      } catch (e) { /* 只读目录 */ }
     } catch (e) { /* 落下一级 */ }
   }
-  // ② 本地快照
-  if (!result) {
+  // ③ 本地快照（桌面同步产生的旧快照也在这条）
+  if (!result && snap) {
     try {
-      const snap = readJson(filePath());
-      result = { models: fromSnapshot(snap), excluded: snap.excluded || 0, schema: 1, source: 'snapshot', asOf: snap.asOf || '' };
+      result = {
+        models: fromSnapshot(snap),
+        excluded: snap.excluded || 0,
+        schema: 1,
+        source: 'snapshot',
+        origin: snap.origin === 'upload' ? 'upload' : 'desktop',
+        asOf: snap.asOf || '',
+      };
     } catch (e) { /* 落下一级 */ }
   }
-  // ③ 包内默认
+  // ④ 包内默认
   if (!result) {
     try {
       const def = readJson(DEFAULT_FILE);
-      result = { models: fromSnapshot(def), excluded: def.excluded || 0, schema: 1, source: 'default', asOf: def.asOf || '' };
-    } catch (e) { result = { models: {}, excluded: 0, schema: 1, source: 'none', asOf: '' }; }
+      result = {
+        models: fromSnapshot(def),
+        excluded: def.excluded || 0,
+        schema: 1,
+        source: 'default',
+        origin: 'default',
+        asOf: def.asOf || '',
+      };
+    } catch (e) {
+      result = {
+        models: {}, excluded: 0, schema: 1,
+        source: 'none', origin: 'none', asOf: '',
+      };
+    }
   }
+  result.sourceAvailable = !!src && srcMtime > 0;
+  result.snapshotAvailable = snapshotAvailable;
 
   cache = { at: Date.now(), mtime: stamp, srcMtime, data: result };
   return result;
@@ -203,14 +304,21 @@ function load(env = process.env) {
 
 /** 内容有变化才落快照（桌面配置每次启动都可能重写，mtime 变化不代表内容变化） */
 function saveIfChanged(imported) {
+  let cur = null;
   try {
-    const cur = readJson(filePath());
-    if (JSON.stringify(cur.models) === JSON.stringify(imported.models)) return;
+    cur = readJson(filePath());
   } catch (e) { /* 没有快照或坏了 → 写一份新的 */ }
+  // 上传是管理员显式动作，桌面自动同步只能更新自己产生的快照。
+  if (cur && cur.origin === 'upload') return;
+  if (cur && JSON.stringify(cur.models) === JSON.stringify(imported.models)) return;
   try {
-    const now = new Date();
-    const asOf = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    writeSnapshot({ schema: 1, models: imported.models, excluded: imported.excluded, asOf });
+    writeSnapshot({
+      schema: 1,
+      origin: 'desktop',
+      models: imported.models,
+      excluded: imported.excluded,
+      asOf: today(),
+    });
   } catch (e) { /* 只读目录不该让服务起不来 */ }
 }
 
@@ -231,7 +339,6 @@ function resetCache() {
 }
 
 module.exports = {
-  load, ids, get, resetCache,
-  importModels, sourcePath, filePath,
-  SNAPSHOT, DEFAULT_FILE, EXCLUDE_KEY_RE,
+  load, ids, get, resetCache, importModels, importFromConfig, sourcePath, filePath,
+  SNAPSHOT, DEFAULT_FILE, EXCLUDE_KEY_RE, MAX_IMPORT_BYTES,
 };

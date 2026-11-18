@@ -6,6 +6,25 @@ import client from '@/api/client'
 // 与 'measured' 严格区分：清单是客户端**声明**的值，本仓没有实测过。
 export type ModelFieldSource = 'upstream' | 'measured' | 'config' | 'desktop'
 
+export interface DumateCatalogMeta {
+  source: 'desktop' | 'snapshot' | 'default' | 'none'
+  origin: 'desktop' | 'upload' | 'default' | 'none'
+  asOf: string
+  count: number
+  excluded: number
+  sourceAvailable: boolean
+  snapshotAvailable: boolean
+}
+
+export interface DumateCatalogImportResult {
+  ok: true
+  origin: 'upload'
+  count: number
+  inputCount: number
+  excluded: number
+  asOf: string
+}
+
 export interface ModelInfoRow {
   id: string
   name: string
@@ -82,6 +101,9 @@ export const modelInfoApi = {
       rows: ModelInfoRow[]
       error?: string
       errors?: Record<string, string>
+      catalog?: DumateCatalogMeta
     }>(`/models/info${qs}`)
   },
+  importCatalog: (content: string, filename: string) =>
+    client.post<DumateCatalogImportResult>('/models/catalog/import', { content, filename }),
 }

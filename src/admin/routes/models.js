@@ -237,6 +237,38 @@ const routes = [
     },
   },
   {
+    // 远程部署读不到用户电脑上的 DuMate 配置：由浏览器读取文件文本后上传，
+    // 服务端解析并只落筛选后的模型清单。原文不回显、不写盘、不进审计。
+    method: 'POST',
+    path: '/catalog/import',
+    handler: ({ res, body, user }) => {
+      const content = body && body.content;
+      if (typeof content !== 'string' || !content.trim()) {
+        return sendJSON(res, 400, { error: '请上传 DuMate 的 opencode.json 文件内容', code: 'empty_config' });
+      }
+      if (Buffer.byteLength(content, 'utf8') > 256 * 1024) {
+        return sendJSON(res, 400, { error: '配置文件超过 256 KB', code: 'config_too_large' });
+      }
+      const filename = String((body && body.filename) || 'opencode.json')
+        .split(/[\\/]/).pop().slice(0, 120) || 'opencode.json';
+      try {
+        const imported = require('../../dumate-catalog').importFromConfig(content);
+        require('../../admin/auth').audit(
+          user ? user.username : 'admin',
+          'dumate_catalog_import',
+          filename,
+          `count=${imported.count} excluded=${imported.excluded} asOf=${imported.asOf}`,
+        );
+        return sendJSON(res, 200, imported);
+      } catch (e) {
+        return sendJSON(res, 400, {
+          error: e && e.message ? e.message : '配置解析失败',
+          code: e && e.code ? e.code : 'import_failed',
+        });
+      }
+    },
+  },
+  {
     // 三条通道的模型一览（统一形状，每个字段带来源）。
     // ?channel=dumate|qwenwork|traework 只看一条；缺省返回全部。
     // 与 /map 的区别：/map 只描述搭子（别名映射，可编辑）；这里描述
@@ -272,6 +304,7 @@ const routes = [
             cached: r.cached === true ? true : undefined,
             scopes: r.scopes || undefined,
             merged: r.merged === true ? true : undefined,
+            catalog: r.catalog || undefined,
           });
         }
         const r = await require('../../model-info').allRows({ force });

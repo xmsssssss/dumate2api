@@ -31,7 +31,7 @@
           千问的模型表接口会 403，当前为静态表（{{ rows.length }} 个）
         </template>
         <template v-else>
-          上游没有模型列表接口；真实后端与上限来自真机实测（{{ rows.length }} 个）
+          DuMate 模型清单声明上下文与输出上限；已实测字段优先，未实测字段标记为清单（{{ rows.length }} 个）
         </template>
       </div>
       <a-space v-if="channel === 'traework' || hasRate">
@@ -99,7 +99,7 @@
             别名 → {{ record.target }}
           </div>
           <div v-else-if="!record.native" class="text-xs text-slate-500">
-            直传（桌面清单）
+            直传（DuMate 清单）
           </div>
         </template>
 
@@ -233,7 +233,7 @@
       <span class="src-tag">上游</span> 接口下发 ·
       <span class="src-tag">实测</span> 本项目实测 ·
       <span class="src-tag">配置</span> 本地配置 ·
-      <span class="src-tag">清单</span> 桌面客户端模型清单声明（未实测）。
+      <span class="src-tag">清单</span> DuMate 模型清单声明（桌面读取或上传，未实测）。
       拿不到的字段显示「—」——<b>不估算</b>，因为一个编出来的上下文上限会让人
       以为真能用满，直到请求失败才发现。
     </div>
