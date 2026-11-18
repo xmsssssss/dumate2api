@@ -77,6 +77,21 @@ test('HTML/JS/CSS 根路径与绝对地址改写回代理', () => {
   assert.match(css, new RegExp(`/login/proxy/${SID}/https/passport\\.baidu\\.com/static/bg\\.png`));
 });
 
+test('已代理资源不会被根路径或重复改写再次嵌套', () => {
+  const target = `${proxy.LOGIN_PROXY_PREFIX}${SID}/https/cas.baidu.com/staticv2/dep/common-login/api.js`;
+  const source = `<html><head><script src="https://cas.baidu.com/staticv2/dep/common-login/api.js"></script></head></html>`;
+  const once = proxy.rewriteContent(source, 'text/html; charset=utf-8', SID, 'login.bce.baidu.com');
+  assert.equal(once.split(target).length - 1, 1);
+  assert.match(once, new RegExp(`src="${target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+
+  const twice = proxy.rewriteContent(once, 'text/html; charset=utf-8', SID, 'login.bce.baidu.com');
+  assert.equal(twice.split(target).length - 1, 1);
+  assert.doesNotMatch(twice, new RegExp(`/login/proxy/${SID}/https/login\\.bce\\.baidu\\.com/api/admin/`));
+
+  const js = `fetch("${target}");`;
+  assert.equal(proxy.rewriteContent(js, 'application/javascript', SID, 'login.bce.baidu.com'), js);
+});
+
 test('会话成功后凭证可读多次但只能取走一次', () => {
   const started = proxy.start({ name: '测试登录' });
   assert.equal(started.ok, true);

@@ -372,6 +372,10 @@ function parseProxyPath(pathname) {
   };
 }
 
+function isProxiedPath(path) {
+  return String(path || '').startsWith(LOGIN_PROXY_PREFIX);
+}
+
 function rewriteAbsoluteUrls(text, sid) {
   return String(text).replace(/(?:https?:)?\/\/([a-z0-9.-]+(?::\d+)?)/gi, (match, host) => {
     if (!isAllowedHostname(host.split(':')[0])) return match;
@@ -384,15 +388,17 @@ function rewriteRootRelative(text, sid, host, mode) {
   let out = String(text);
   if (mode === 'html') {
     out = out.replace(
-      /(\b(?:href|src|action|poster)\s*=\s*)(["'])\/(?!\/)/gi,
-      (_m, lead, quote) => `${lead}${quote}${base}/`,
+      /(\b(?:href|src|action|poster)\s*=\s*)(["'])(\/(?!\/)[^"']*)\2/gi,
+      (_m, lead, quote, path) => (
+        isProxiedPath(path) ? _m : `${lead}${quote}${base}${path}${quote}`
+      ),
     );
     out = out.replace(
       /(\bsrcset\s*=\s*)(["'])([^"']+)\2/gi,
       (_m, lead, quote, value) => {
         const rewritten = value.split(',').map((part) => {
           const bit = part.trim();
-          if (!bit.startsWith('/') || bit.startsWith('//')) return bit;
+          if (!bit.startsWith('/') || bit.startsWith('//') || isProxiedPath(bit)) return bit;
           return `${base}${bit}`;
         }).join(', ');
         return `${lead}${quote}${rewritten}${quote}`;
@@ -402,13 +408,17 @@ function rewriteRootRelative(text, sid, host, mode) {
   if (mode === 'css' || mode === 'html') {
     out = out.replace(
       /url\(\s*(["']?)\/(?!\/)([^"')\s]+)\1\s*\)/gi,
-      (_m, quote, path) => `url(${quote}${base}/${path}${quote})`,
+      (_m, quote, path) => (
+        isProxiedPath(`/${path}`) ? _m : `url(${quote}${base}/${path}${quote})`
+      ),
     );
   }
   if (mode === 'js' || mode === 'html') {
     out = out.replace(
       /(["'])\/(?!\/)([^"'\\\r\n]*?)\1/g,
-      (_m, quote, path) => `${quote}${base}/${path}${quote}`,
+      (_m, quote, path) => (
+        isProxiedPath(`/${path}`) ? _m : `${quote}${base}/${path}${quote}`
+      ),
     );
   }
   return out;
