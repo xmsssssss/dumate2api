@@ -305,6 +305,11 @@ async function start(opts = {}) {
   }
 }
 
+// 查看成功的 cookie。真正落库成功后再 takeCookie，失败时不丢凭证。
+function peekCookie() {
+  return session.cookie;
+}
+
 // 取走成功的 cookie。取走即清空——同一份凭证不应被重复入库两次。
 function takeCookie() {
   const c = session.cookie;
@@ -320,4 +325,14 @@ function cancel() {
   return { ok: true };
 }
 
-module.exports = { start, cancel, snapshot, takeCookie, findBrowser, hasDisplay, LOGIN_URL, extractAuthCookie };
+module.exports = {
+  start,
+  cancel,
+  snapshot,
+  peekCookie,
+  takeCookie,
+  findBrowser,
+  hasDisplay,
+  LOGIN_URL,
+  extractAuthCookie,
+};

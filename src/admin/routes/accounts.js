@@ -3,6 +3,8 @@ const crypto = require('crypto');
 const accounts = require('../../accounts');
 const web = require('../../dumate-web');
 const loginBrowser = require('../../login-browser');
+const loginWebProxy = require('../../login-web-proxy');
+const authImport = require('../../auth-import');
 const webPool = require('../../web-pool');
 const accountPool = require('../../pool').pool;
 const taskRunner = require('../../task-runner');
@@ -357,6 +359,60 @@ function aggregateExpiring(packages, accountId, days = 30) {
     }));
 }
 
+function nativeLoginAvailable() {
+  return !!(loginBrowser.hasDisplay() && loginBrowser.findBrowser());
+}
+
+function createDesktopAccount(result, wantName, auditSource) {
+  const created = accounts.create({
+    cookie: result.cookie,
+    name: String(wantName || '').trim() || result.name_hint || '',
+  });
+  require('../../admin/auth').audit(
+    'admin',
+    'web_account_create',
+    accounts.displayName(created),
+    auditSource,
+  );
+  const fresh = accounts.getRaw(created.id) || created;
+  return accounts.toPublic({
+    ...fresh,
+    uid: fresh.uid || result.bce_user_id || '',
+    nickname: fresh.nickname || result.name_hint || '',
+  });
+}
+
+async function createBrowserAccount(cookie, wantName, auditSource) {
+  let info = null;
+  try {
+    info = await web.api.userInfo(cookie, { agent: web.agentFor(null) });
+  } catch (e) {
+    info = null;
+  }
+  const name = String(wantName || '').trim() || info?.nickname || '';
+  const created = accounts.create({ cookie, name });
+  if (info && info.ok) {
+    accounts.patchInternal(created.id, {
+      uid: info.uid || '',
+      nickname: info.nickname || '',
+      last_login_ok_at: Date.now(),
+      last_error: '',
+    });
+  }
+  require('../../admin/auth').audit(
+    'admin',
+    'web_account_create',
+    accounts.displayName(created),
+    auditSource,
+  );
+  const fresh = accounts.getRaw(created.id) || created;
+  return accounts.toPublic({
+    ...fresh,
+    uid: fresh.uid || info?.uid || '',
+    nickname: fresh.nickname || info?.nickname || '',
+  });
+}
+
 const routes = [
   {
     // 桌面端登录态直读导入（2026-11-07 清单项 6 尾巴）：解密本机
@@ -366,28 +422,58 @@ const routes = [
     method: 'POST',
     path: '/import-desktop',
     handler: ({ res, body }) => {
-      const importer = require('../../auth-import');
-      const r = importer.importDesktopAuth({ dir: body && body.dir });
+      const r = authImport.importDesktopAuth({ dir: body && body.dir });
       if (!r.ok) return sendJSON(res, 400, r);
       try {
-        const created = accounts.create({
-          cookie: r.cookie,
-          name: String((body && body.name) || '').trim() || r.name_hint || '',
-        });
-        require('../../admin/auth').audit('admin', 'web_account_create', accounts.displayName(created), `via desktop auth.json（${r.cookie_count} 条 cookie）`);
-        const fresh = accounts.getRaw(created.id) || created;
+        const account = createDesktopAccount(
+          r,
+          body && body.name,
+          `via desktop auth.json（${r.cookie_count} 条 cookie）`,
+        );
         return sendJSON(res, 200, {
           ok: true,
           cookie_count: r.cookie_count,
           skipped_domains: r.skipped_domains,
-          account: accounts.toPublic({
-            ...fresh,
-            uid: fresh.uid || r.bce_user_id || '',
-            nickname: fresh.nickname || r.name_hint || '',
-          }),
+          account,
         });
       } catch (e) {
         // 已存在同账号等：409 如实报，不吞
+        return sendJSON(res, 409, { ok: false, error: e.message });
+      }
+    },
+  },
+  {
+    // Docker/远程部署读不到用户电脑上的桌面端文件。浏览器只负责把两份
+    // 文件内容提交过来，解密、域过滤、去重与落库全部在服务器完成。
+    method: 'POST',
+    path: '/import-desktop-upload',
+    handler: ({ res, body }) => {
+      const authContent = body && body.authContent;
+      const keyBuffer = authImport.decodeCookieKeyBase64(body && body.cookieKeyBase64);
+      if (typeof authContent !== 'string' || !authContent) {
+        return sendJSON(res, 400, { ok: false, error: '缺少 auth.json 内容' });
+      }
+      if (!keyBuffer) {
+        return sendJSON(res, 400, {
+          ok: false,
+          error: '.cookie-key 不是合法 Base64，或解码后不是 32 字节',
+        });
+      }
+      const r = authImport.importAuthContent({ authContent, keyBuffer });
+      if (!r.ok) return sendJSON(res, 400, r);
+      try {
+        const account = createDesktopAccount(
+          r,
+          body && body.name,
+          `via uploaded desktop auth files（${r.cookie_count} 条 cookie）`,
+        );
+        return sendJSON(res, 200, {
+          ok: true,
+          cookie_count: r.cookie_count,
+          skipped_domains: r.skipped_domains,
+          account,
+        });
+      } catch (e) {
         return sendJSON(res, 409, { ok: false, error: e.message });
       }
     },
@@ -399,10 +485,21 @@ const routes = [
     method: 'POST',
     path: '/login/start',
     handler: async ({ res, body }) => {
-      const r = await loginBrowser.start({ name: (body && body.name) || '' });
+      const name = (body && body.name) || '';
+      const canUseNative = nativeLoginAvailable();
+      const mode = body && body.mode;
+      const useProxy = mode === 'proxy' || (mode !== 'browser' && !canUseNative);
+      const r = useProxy
+        ? loginWebProxy.start({ name })
+        : await loginBrowser.start({ name });
       if (!r.ok) return sendJSON(res, 400, r);
-      require('../../admin/auth').audit('admin', 'web_login_start', '', r.browser_path || '');
-      return sendJSON(res, 200, r);
+      require('../../admin/auth').audit(
+        'admin',
+        'web_login_start',
+        '',
+        useProxy ? 'via docker login proxy' : (r.browser_path || 'via native browser'),
+      );
+      return sendJSON(res, 200, { ...r, mode: useProxy ? 'proxy' : 'browser' });
     },
   },
   {
@@ -410,43 +507,46 @@ const routes = [
     method: 'GET',
     path: '/login/poll',
     handler: async ({ res, req }) => {
-      const s = loginBrowser.snapshot();
+      const params = new URL(req.url, 'http://localhost').searchParams;
+      const sessionId = params.get('session_id');
+      const s = sessionId
+        ? loginWebProxy.snapshot(sessionId)
+        : { ...loginBrowser.snapshot(), mode: 'browser' };
       if (s.status === 'success' && s.has_cookie) {
-        const cookie = loginBrowser.takeCookie();
-        const wantName = (req.url.match(/[?&]name=([^&]*)/) || [])[1];
+        const cookie = sessionId
+          ? loginWebProxy.peekCookie(sessionId)
+          : loginBrowser.peekCookie();
+        if (!cookie) {
+          return sendJSON(res, 409, {
+            ...s,
+            status: 'failed',
+            message: '登录凭证已失效，请重新登录',
+          });
+        }
+        const wantName = params.get('name') || '';
         try {
-          // 先问上游这个 cookie 是谁：昵称和 uid 是列表页展示要用的，
-          // 拿不到就退回「账号 N」，不要让入库因为一次查询失败而中断
-          let info = null;
-          // 出站代理（E 包收口补点）：登录时还没有账号，走全局默认代理；
-          // 配置非法按查不到信息处理（入库流程不中断）
-          try { info = await web.api.userInfo(cookie, { agent: web.agentFor(null) }); } catch (e) { info = null; }
-          const name = (wantName ? decodeURIComponent(wantName) : '') ||
-            (info && info.nickname) || '';
-
-          const created = accounts.create({ cookie, name });
-          if (info && info.ok) {
-            accounts.patchInternal(created.id, {
-              uid: info.uid || '',
-              nickname: info.nickname || '',
-              last_login_ok_at: Date.now(),
-              last_error: '',
-            });
-          }
-          require('../../admin/auth').audit('admin', 'web_account_create', accounts.displayName(created), 'via browser');
-          // 回包用**对外形状**：created 是 create() 的返回值，其中的 name
-          // 已是显示名；但 uid/nickname 是这次刚拿到的，要合进去再序列化，
-          // 否则新账号的回包会漏掉昵称（下一个接口才补上）。
-          const fresh = accounts.getRaw(created.id) || created;
+          const account = await createBrowserAccount(
+            cookie,
+            wantName,
+            sessionId ? 'via browser login proxy' : 'via browser',
+          );
+          // 入库成功后才清掉服务端暂存；重复账号等失败时保留凭证，
+          // 页面不会因为一次入库错误把整轮登录结果吞掉。
+          if (sessionId) loginWebProxy.takeCookie(sessionId);
+          else loginBrowser.takeCookie();
           return sendJSON(res, 200, {
             ...s, status: 'saved', has_cookie: false,
-            account: accounts.toPublic({
-              ...fresh, uid: info?.uid || '', nickname: info?.nickname || '',
-            }),
+            account,
           });
         } catch (e) {
-          // 已存在同账号等：如实报错，但不把 cookie 丢掉——用户可改用粘贴方式
-          return sendJSON(res, 409, { ...s, status: 'failed', message: e.message });
+          // 已存在同账号等：如实报错。凭证仍留在服务端会话中，便于重试
+          // 或排查；前端收到 409 后会停止轮询并直接展示原因。
+          return sendJSON(res, 409, {
+            ...s,
+            status: 'failed',
+            has_cookie: true,
+            message: e.message,
+          });
         }
       }
       return sendJSON(res, 200, s);
@@ -455,26 +555,35 @@ const routes = [
   {
     method: 'POST',
     path: '/login/cancel',
-    handler: ({ res }) => sendJSON(res, 200, loginBrowser.cancel()),
+    handler: ({ res, body }) => {
+      const sessionId = body && body.session_id;
+      return sendJSON(res, 200, sessionId
+        ? loginWebProxy.cancel(sessionId)
+        : loginBrowser.cancel());
+    },
   },
   {
     // 手动粘贴入口（保留）：浏览器登录器不可用时（无 Edge/Chrome）的兜底
     method: 'GET',
     path: '/login-url',
-    handler: ({ res }) => sendJSON(res, 200, {
-      url: LOGIN_URL,
-      steps: [
-        '点击链接，在打开的页面登录百度账号',
-        '登录成功后回到本页，打开浏览器开发者工具（F12）',
-        '切到 Application → Cookies → https://www.dumate.cn',
-        '全选复制所有 cookie，粘贴到下面的输入框',
-      ],
-      note: '百度登录态位于 baidu.com 域，网页无法直接读取浏览器 cookie，所以需要手动复制一次',
-      // 两个条件缺一不可：有可执行文件，且服务端有图形界面。
-      // 无头部署（服务器/容器）能找到 chromium 也开不出窗口——前端据此
-      // 直接切到「手动粘贴」，而不是让用户对着点不动的按钮。
-      browser_available: !!(loginBrowser.findBrowser() && loginBrowser.hasDisplay()),
-    }),
+    handler: ({ res }) => {
+      const browserAvailable = nativeLoginAvailable();
+      return sendJSON(res, 200, {
+        url: LOGIN_URL,
+        steps: [
+          '点击链接，在打开的页面登录百度账号',
+          '登录成功后回到本页，打开浏览器开发者工具（F12）',
+          '切到 Application → Cookies → https://www.dumate.cn',
+          '全选复制所有 cookie，粘贴到下面的输入框',
+        ],
+        note: '百度登录态位于 baidu.com 域，网页无法直接读取浏览器 cookie，所以需要手动复制一次',
+        // 本机有图形界面且找到浏览器时仍用独立窗口；Docker/无头部署则由
+        // 服务端代理登录页，管理浏览器只访问同源地址，不接触百度 Cookie。
+        recommended_mode: browserAvailable ? 'browser' : 'proxy',
+        browser_available: browserAvailable,
+        proxy_available: true,
+      });
+    },
   },
   {
     method: 'GET',

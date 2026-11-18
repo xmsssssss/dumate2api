@@ -38,6 +38,7 @@ const taskScheduler = require('../task-scheduler');
 // 保活排程随下方 taskScheduler.schedule() 在本进程唤醒（task-scheduler.js 内部
 // 调 keepalive.schedule()），网关进程不排——见 ../boot.js 文件头。
 const boot = require('../boot');
+const loginWebProxy = require('../login-web-proxy');
 
 const PORT = parseInt(process.env.DUMATE_ADMIN_PORT || '9081', 10);
 const HOST = process.env.DUMATE_ADMIN_HOST || '127.0.0.1';
@@ -190,6 +191,22 @@ function handleRequest(req, res) {
   // CORS 白名单判定（fail-closed，P0-1）：入口算一次挂到 res 上，
   // router/admin 的 sendJSON 与下面的 preflight 统一取用。
   res._cors = cors.headersFor(req);
+  const url = req.url.split('?')[0];
+
+  // 登录代理运行在 CSP sandbox 的不透明源中，不能要求它携带管理端
+  // Cookie；百度 Set-Cookie 由代理模块保管，也绝不转发给管理浏览器。
+  // 因此这组路径必须排在普通 OPTIONS 和管理端鉴权之前。
+  if (url.startsWith(loginWebProxy.LOGIN_PROXY_PREFIX)) {
+    if (req.method === 'OPTIONS') return loginWebProxy.handleOptions(req, res);
+    const status = url.match(
+      /^\/api\/admin\/web-accounts\/login\/proxy\/([^/]+)\/_status\/?$/,
+    );
+    if (status && req.method === 'GET') {
+      return loginWebProxy.sendStatus(req, res, decodeURIComponent(status[1]));
+    }
+    return loginWebProxy.handleProxy(req, res, url);
+  }
+
   // CORS preflight：仅白名单命中的 Origin 才回 ACAO。开发期 Vite(5173) 直连
   // 本端口需在 DUMATE_CORS_ORIGINS 里显式列出；生产同源不需要 CORS。
   if (req.method === 'OPTIONS') {
@@ -200,8 +217,6 @@ function handleRequest(req, res) {
     });
     return res.end();
   }
-
-  const url = req.url.split('?')[0];
 
   // Prometheus 抓取入口（调研 P2-17）：根路径 /metrics，与 /api/admin/metrics
   // 同一渲染。可选 DUMATE_METRICS_TOKEN；未配时允许匿名——标签是低基数的

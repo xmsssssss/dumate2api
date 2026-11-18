@@ -41,6 +41,33 @@ export interface LoginUrlInfo {
   url: string
   steps: string[]
   note: string
+  recommended_mode: 'browser' | 'proxy'
+  browser_available: boolean
+  proxy_available: boolean
+}
+
+export interface BrowserLoginSession {
+  active?: boolean
+  status: 'idle' | 'waiting' | 'success' | 'saved' | 'failed' | 'cancelled'
+  mode: 'browser' | 'proxy'
+  message?: string
+  session_id?: string
+  login_url?: string
+  has_cookie?: boolean
+  account?: WebAccount
+}
+
+export interface DesktopAuthImportPayload {
+  authContent: string
+  cookieKeyBase64: string
+  name?: string
+}
+
+export interface DesktopAuthImportResult {
+  ok: boolean
+  cookie_count: number
+  skipped_domains: number
+  account: WebAccount
 }
 
 export interface AccountStatus {

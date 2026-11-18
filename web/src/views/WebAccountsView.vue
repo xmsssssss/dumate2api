@@ -21,8 +21,8 @@
       <template #description>
         <div>签到、抽奖、积分都属于网页端（dumate.baidu.com），与本地代理网关是两套东西。</div>
         <div class="mt-1">
-          登录态位于百度域（<code>baidu.com</code>），网页无法直接读取浏览器 cookie，
-          所以添加账号时需要你手动复制一次。
+          登录态位于百度域（<code>baidu.com</code>）。本机部署可弹出登录窗口；
+          Docker/远程部署会通过管理端同源代理页登录，由服务器接收凭证。
         </div>
       </template>
     </a-alert>
@@ -310,14 +310,23 @@
       title="添加账号"
       :footer="null"
       width="560"
+      @cancel="cancelAddDialog"
     >
       <a-tabs v-model:activeKey="addMode">
         <a-tab-pane key="browser" tab="浏览器登录（推荐）">
           <a-alert type="info" show-icon class="mb-3">
-            <template #message>点下面的按钮会打开一个浏览器窗口</template>
+            <template #message>
+              {{ loginMode === 'proxy' ? '通过服务器代理页登录' : '点下面的按钮会打开一个浏览器窗口' }}
+            </template>
             <template #description>
-              在那个窗口里登录百度账号，程序检测到登录成功后会自动获取凭证并关闭窗口。
-              无需手动复制任何东西。
+              <template v-if="loginMode === 'proxy'">
+                登录页由服务器代理打开，百度 Cookie 只保存在服务端会话中。
+                登录成功后自动写入账号池，无需手动复制任何东西。
+              </template>
+              <template v-else>
+                在这个窗口里登录百度账号，程序检测到登录成功后会自动获取凭证并关闭窗口。
+                无需手动复制任何东西。
+              </template>
             </template>
           </a-alert>
 
@@ -332,7 +341,13 @@
               :type="loginAlertType"
               show-icon
               :message="loginAlertText"
-            />
+            >
+              <template v-if="loginSession?.login_url && loginSession?.status === 'waiting'" #description>
+                <a :href="loginSession.login_url" target="_blank" rel="noopener">
+                  代理页没有自动打开？点此继续
+                </a>
+              </template>
+            </a-alert>
           </div>
 
           <a-space>
@@ -342,7 +357,13 @@
               :disabled="loginSession?.status === 'waiting'"
               @click="startBrowserLogin"
             >
-              {{ loginSession?.status === 'waiting' ? '等待登录中…' : '打开登录窗口' }}
+              {{
+                loginSession?.status === 'waiting'
+                  ? '等待登录中…'
+                  : loginMode === 'proxy'
+                    ? '打开代理登录页'
+                    : '打开登录窗口'
+              }}
             </a-button>
             <a-button
               v-if="loginSession?.status === 'waiting'"
@@ -352,8 +373,8 @@
             </a-button>
           </a-space>
 
-          <div v-if="!browserAvailable" class="text-xs text-red-600 mt-2">
-            未检测到 Edge 或 Chrome，请改用右侧的「手动粘贴」
+          <div v-if="!browserAvailable && !proxyAvailable" class="text-xs text-red-600 mt-2">
+            服务端既没有可用浏览器，也未启用登录代理，请改用「手动粘贴」
           </div>
         </a-tab-pane>
 
@@ -397,11 +418,16 @@
 
         <a-tab-pane key="desktop" tab="桌面端直读（最简）">
           <a-alert type="info" show-icon class="mb-3">
-            <template #message>读本机 DuMate 客户端的登录态，一键导入</template>
+            <template #message>导入 DuMate 桌面客户端的加密登录态</template>
             <template #description>
-              解密 <code>%APPDATA%\qianfan-desktop-app\auth.json</code>（AES-256-GCM，
-              排布实测见 <code>src/auth-import.js</code>）——无需装客户端的机器用不了这个方式，
-              改走「手动粘贴」。同一账号重复导入会被 BDUSS 去重如实挡住。
+              文件位置（Windows，DuMate 客户端安装并登录后才有）：
+              <div class="font-mono mt-1"><code>%APPDATA%\qianfan-desktop-app\auth.json</code></div>
+              <div class="font-mono"><code>%APPDATA%\qianfan-desktop-app\.cookie-key</code></div>
+              <div class="mt-1">
+                <code>.cookie-key</code> 是隐藏文件；如果资源管理器里看不到，请开启“显示隐藏的项目”。
+                可先按 <code>Win+R</code>，输入 <code>%APPDATA%\qianfan-desktop-app</code> 直接打开目录。
+                解密在服务器完成，上传内容不会保存。
+              </div>
             </template>
           </a-alert>
 
@@ -411,9 +437,48 @@
             </a-form-item>
           </a-form>
 
+          <a-divider orientation="left">本机部署</a-divider>
           <a-button type="primary" :loading="desktopImporting" block @click="importDesktop">
             一键导入桌面端登录态
           </a-button>
+
+          <a-divider orientation="left">Docker / 远程部署</a-divider>
+          <a-space direction="vertical" style="width: 100%">
+            <div class="flex items-center gap-2">
+              <a-upload
+                :show-upload-list="false"
+                accept=".json,application/json"
+                :before-upload="pickDesktopAuth"
+              >
+                <a-button><UploadOutlined />选择 auth.json</a-button>
+              </a-upload>
+              <span class="text-xs text-slate-500">
+                {{ desktopAuthFileName || '未选择' }}
+              </span>
+            </div>
+            <div class="flex items-center gap-2">
+              <a-upload
+                :show-upload-list="false"
+                accept=".cookie-key"
+                :before-upload="pickDesktopCookieKey"
+              >
+                <a-button><UploadOutlined />选择 .cookie-key</a-button>
+              </a-upload>
+              <span class="text-xs text-slate-500">
+                {{ desktopCookieKeyName || '未选择' }}
+              </span>
+            </div>
+            <a-button
+              type="primary"
+              block
+              :loading="desktopUploading"
+              :disabled="!desktopAuthContent || !desktopCookieKeyBase64"
+              @click="importDesktopUpload"
+            >
+              上传并解析
+            </a-button>
+          </a-space>
+
           <div v-if="desktopImportResult" class="text-xs mt-2" :class="desktopImportResult.ok ? 'text-emerald-600' : 'text-red-600'">
             {{ desktopImportResult.text }}
           </div>
@@ -550,6 +615,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { App } from 'ant-design-vue'
+import { UploadOutlined } from '@ant-design/icons-vue'
 import client from '@/api/client'
 import { channelStore, isTraework, isQwenwork, isQoder, isWorkBuddy } from '@/stores/channel'
 import TraeworkAccounts from '@/components/traework/TraeworkAccounts.vue'
@@ -608,10 +674,19 @@ const minuteOptions = [
 const verifyResult = ref<{ ok: boolean; nickname?: string; uid?: string; error?: string } | null>(null)
 
 const form = reactive({ name: '', cookie: '' })
-const addMode = ref<'browser' | 'manual'>('browser')
+const addMode = ref<'browser' | 'manual' | 'desktop'>('browser')
 const browserAvailable = ref(true)
+const proxyAvailable = ref(true)
+const recommendedLoginMode = ref<'browser' | 'proxy'>('browser')
 const loginSession = ref<any>(null)
 let pollTimer: any = null
+let loginPopup: Window | null = null
+
+const loginMode = computed<'browser' | 'proxy'>(() => (
+  loginSession.value?.mode === 'proxy' || recommendedLoginMode.value === 'proxy'
+    ? 'proxy'
+    : 'browser'
+))
 
 const loginAlertType = computed(() => {
   const s = loginSession.value?.status
@@ -623,7 +698,11 @@ const loginAlertType = computed(() => {
 const loginAlertText = computed(() => {
   const s = loginSession.value
   if (!s) return ''
-  if (s.status === 'waiting') return '已打开登录窗口，请在其中完成登录…'
+  if (s.status === 'waiting') {
+    return s.mode === 'proxy'
+      ? '登录代理页已打开，请在其中完成百度登录…'
+      : '已打开登录窗口，请在其中完成登录…'
+  }
   if (s.status === 'saved') return `已添加账号：${s.account?.name ?? ''}`
   if (s.status === 'success') return '登录成功，正在保存…'
   if (s.status === 'cancelled') return '已取消'
@@ -819,8 +898,8 @@ async function loadLoginInfo() {
   loginUrl.value = data.url
   loginSteps.value = data.steps
   browserAvailable.value = data.browser_available !== false
-  // 没有可用浏览器时默认切到手动粘贴，否则用户会对着一个点不动的按钮
-  if (!browserAvailable.value) addMode.value = 'manual'
+  proxyAvailable.value = data.proxy_available !== false
+  recommendedLoginMode.value = data.recommended_mode === 'proxy' ? 'proxy' : 'browser'
 }
 
 function openAdd() {
@@ -828,6 +907,8 @@ function openAdd() {
   form.cookie = ''
   verifyResult.value = null
   loginSession.value = null
+  desktopImportResult.value = null
+  clearDesktopUpload()
   addOpen.value = true
   stopPoll()
 }
@@ -837,36 +918,88 @@ function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 
+function closeLoginPopup() {
+  if (loginPopup) loginPopup.close()
+  loginPopup = null
+}
+
+function cancelAddDialog() {
+  const sessionId = loginSession.value?.session_id
+  const waiting = loginSession.value?.status === 'waiting'
+  stopPoll()
+  closeLoginPopup()
+  loginSession.value = null
+  if (waiting) {
+    client.post('/web-accounts/login/cancel', sessionId ? { session_id: sessionId } : {})
+      .catch(() => {})
+  }
+}
+
 async function startBrowserLogin() {
+  // 先同步占位，再等接口返回 URL；否则 axios 返回后 window.open
+  // 会被浏览器当作非用户手势触发而拦截。
+  loginPopup = loginMode.value === 'proxy'
+    ? window.open('about:blank', '_blank')
+    : null
+  if (loginPopup) loginPopup.opener = null
   try {
-    const { data } = await client.post('/web-accounts/login/start', { name: form.name })
+    const { data } = await client.post('/web-accounts/login/start', {
+      name: form.name,
+      mode: recommendedLoginMode.value,
+    })
     loginSession.value = data
-    message.info('已打开登录窗口，请在其中登录')
+    if (data.mode === 'proxy' && data.login_url) {
+      if (loginPopup) loginPopup.location.href = data.login_url
+      else loginPopup = window.open(data.login_url, '_blank')
+      message.info('已打开代理登录页，请在其中登录')
+    } else {
+      if (loginPopup) loginPopup.close()
+      loginPopup = null
+      message.info('已打开登录窗口，请在其中登录')
+    }
     stopPoll()
     pollTimer = setInterval(pollLogin, 1500)
   } catch (e: any) {
+    closeLoginPopup()
     message.error(e?.response?.data?.error || '无法打开登录窗口')
   }
 }
 
 async function pollLogin() {
-  const q = form.name ? `?name=${encodeURIComponent(form.name)}` : ''
-  const { data } = await client.get(`/web-accounts/login/poll${q}`)
-  loginSession.value = data
-  if (data.status === 'saved') {
-    stopPoll()
-    message.success(`已添加账号：${data.account?.name ?? ''}`)
-    await load()
-    setTimeout(() => { addOpen.value = false }, 1200)
-  } else if (data.status === 'failed' || data.status === 'cancelled') {
-    stopPoll()
-    if (data.status === 'failed') message.error(data.message || '登录失败')
+  try {
+    const params = new URLSearchParams()
+    if (form.name) params.set('name', form.name)
+    if (loginSession.value?.session_id) params.set('session_id', loginSession.value.session_id)
+    const suffix = params.toString() ? `?${params.toString()}` : ''
+    const { data } = await client.get(`/web-accounts/login/poll${suffix}`)
+    loginSession.value = data
+    if (data.status === 'saved') {
+      stopPoll()
+      closeLoginPopup()
+      message.success(`已添加账号：${data.account?.name ?? ''}`)
+      await load()
+      setTimeout(() => { addOpen.value = false }, 1200)
+    } else if (data.status === 'failed' || data.status === 'cancelled') {
+      stopPoll()
+      if (data.status === 'failed') message.error(data.message || '登录失败')
+    }
+  } catch (e: any) {
+    const status = e?.response?.status
+    const data = e?.response?.data
+    if (status === 404 || status === 409 || status === 410) {
+      stopPoll()
+      if (data && typeof data === 'object') loginSession.value = data
+      message.error(data?.message || (status === 409 ? '登录结果保存失败' : '登录会话不存在或已过期，请重新打开'))
+    }
   }
 }
 
 async function cancelBrowserLogin() {
   stopPoll()
-  await client.post('/web-accounts/login/cancel')
+  closeLoginPopup()
+  await client.post('/web-accounts/login/cancel', {
+    session_id: loginSession.value?.session_id,
+  })
   loginSession.value = null
 }
 
@@ -933,7 +1066,49 @@ async function saveProxy() {
 // ── 桌面端直读导入（清单项 6 尾巴）──
 // 解密在后端 src/auth-import.js（排布实测）；前端只触发并展示结果。
 const desktopImporting = ref(false)
+const desktopUploading = ref(false)
 const desktopImportResult = ref<{ ok: boolean; text: string } | null>(null)
+const desktopAuthFileName = ref('')
+const desktopCookieKeyName = ref('')
+const desktopAuthContent = ref('')
+const desktopCookieKeyBase64 = ref('')
+
+function clearDesktopUpload() {
+  desktopAuthFileName.value = ''
+  desktopCookieKeyName.value = ''
+  desktopAuthContent.value = ''
+  desktopCookieKeyBase64.value = ''
+}
+
+async function pickDesktopAuth(file: File) {
+  try {
+    if (file.size > 512 * 1024) throw new Error('auth.json 超过 512KB')
+    desktopAuthContent.value = await file.text()
+    desktopAuthFileName.value = file.name
+    desktopImportResult.value = null
+  } catch (e: any) {
+    clearDesktopUpload()
+    message.error(e?.message || '读取 auth.json 失败')
+  }
+  return false
+}
+
+async function pickDesktopCookieKey(file: File) {
+  try {
+    if (file.size !== 32) throw new Error('.cookie-key 必须恰好 32 字节')
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    let binary = ''
+    for (const b of bytes) binary += String.fromCharCode(b)
+    desktopCookieKeyBase64.value = btoa(binary)
+    desktopCookieKeyName.value = file.name || '.cookie-key'
+    desktopImportResult.value = null
+  } catch (e: any) {
+    desktopCookieKeyBase64.value = ''
+    desktopCookieKeyName.value = ''
+    message.error(e?.message || '读取 .cookie-key 失败')
+  }
+  return false
+}
 
 async function importDesktop() {
   desktopImporting.value = true
@@ -952,6 +1127,36 @@ async function importDesktop() {
     message.error(msg)
   } finally {
     desktopImporting.value = false
+  }
+}
+
+async function importDesktopUpload() {
+  if (!desktopAuthContent.value || !desktopCookieKeyBase64.value) {
+    message.error('请先选择 auth.json 和 .cookie-key')
+    return
+  }
+  desktopUploading.value = true
+  desktopImportResult.value = null
+  try {
+    const { data: r } = await client.post('/web-accounts/import-desktop-upload', {
+      authContent: desktopAuthContent.value,
+      cookieKeyBase64: desktopCookieKeyBase64.value,
+      name: form.name,
+    })
+    desktopImportResult.value = {
+      ok: true,
+      text: `已导入 ${r.cookie_count} 条 cookie（跳过无关域 ${r.skipped_domains} 条）→ 账号「${r.account?.name}」`,
+    }
+    message.success('上传解析成功')
+    await load()
+    setTimeout(() => { addOpen.value = false }, 1200)
+  } catch (e: any) {
+    const msg = e?.response?.data?.error || e?.message || '上传解析失败'
+    desktopImportResult.value = { ok: false, text: msg }
+    message.error(msg)
+  } finally {
+    desktopUploading.value = false
+    clearDesktopUpload()
   }
 }
 

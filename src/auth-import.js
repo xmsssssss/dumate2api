@@ -20,26 +20,55 @@ const path = require('path');
 const crypto = require('crypto');
 
 const DEFAULT_DIR = () => path.join(process.env.APPDATA || '', 'qianfan-desktop-app');
+const MAX_AUTH_CONTENT_BYTES = 512 * 1024;
 
 // 无关域：统计/第三方，与登录态无关（实测 57 条里它们占了 5 条）
 const SKIP_DOMAINS = new Set(['.hm.baidu.com', 'hao123.com', '.hao123.com', 'yoojia.com', '.yoojia.com', 'xlab.baidu.com']);
 
 /**
- * 解密桌面端登录态。返回 { ok, cookie, bce_user_id, cookie_count, name_hint }
- * 或 { ok:false, error }。
- * @param {object} opts { dir?: string } auth.json 所在目录，默认 %APPDATA%\qianfan-desktop-app
+ * 解码浏览器上传的 .cookie-key。允许标准 Base64 的省略尾填充，但拒绝
+ * 非规范编码、错误长度和任何不是恰好 32 字节的结果。
  */
-function importDesktopAuth(opts = {}) {
-  const dir = String(opts.dir || DEFAULT_DIR());
-  const authPath = path.join(dir, 'auth.json');
-  const keyPath = path.join(dir, '.cookie-key');
-  let auth, key;
-  try {
-    auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
-    key = fs.readFileSync(keyPath);
-  } catch (e) {
-    return { ok: false, error: `读不到桌面端登录态文件（${e.message}）。确认本机装过 DuMate 客户端并登录过。` };
+function decodeCookieKeyBase64(value) {
+  const raw = String(value || '').replace(/\s+/g, '');
+  if (!raw || raw.length > 128 || !/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) return null;
+  const unpadded = raw.replace(/=+$/, '');
+  if (!unpadded || unpadded.length % 4 === 1) return null;
+  const padded = raw.endsWith('=')
+    ? raw
+    : raw + '='.repeat((4 - (raw.length % 4)) % 4);
+  if (padded.length % 4 !== 0) return null;
+  const key = Buffer.from(padded, 'base64');
+  if (key.length !== 32 || key.toString('base64') !== padded) return null;
+  return key;
+}
+
+/**
+ * 从上传内容解密桌面端登录态。
+ *
+ * @param {object} opts
+ * @param {string|Buffer} opts.authContent auth.json 文本或原始字节
+ * @param {Buffer} opts.keyBuffer .cookie-key 的 32 字节内容
+ */
+function importAuthContent(opts = {}) {
+  const authText = Buffer.isBuffer(opts.authContent)
+    ? opts.authContent.toString('utf8')
+    : String(opts.authContent || '');
+  if (!authText) return { ok: false, error: 'auth.json 内容为空' };
+  if (Buffer.byteLength(authText) > MAX_AUTH_CONTENT_BYTES) {
+    return { ok: false, error: `auth.json 超过 ${MAX_AUTH_CONTENT_BYTES} 字节上限` };
   }
+
+  let auth;
+  try {
+    auth = JSON.parse(authText);
+  } catch (e) {
+    return { ok: false, error: 'auth.json 不是合法 JSON' };
+  }
+
+  const key = Buffer.isBuffer(opts.keyBuffer)
+    ? opts.keyBuffer
+    : Buffer.from(opts.keyBuffer == null ? '' : opts.keyBuffer);
   if (!key || key.length !== 32) {
     return { ok: false, error: `.cookie-key 不是 32 字节，解密排布可能已变——如实拒绝，不猜` };
   }
@@ -93,4 +122,29 @@ function importDesktopAuth(opts = {}) {
   };
 }
 
-module.exports = { importDesktopAuth, DEFAULT_DIR, SKIP_DOMAINS };
+/**
+ * 解密本机桌面端登录态。返回形状同 importAuthContent()。
+ * @param {object} opts { dir?: string } auth.json 所在目录，默认 %APPDATA%\qianfan-desktop-app
+ */
+function importDesktopAuth(opts = {}) {
+  const dir = String(opts.dir || DEFAULT_DIR());
+  const authPath = path.join(dir, 'auth.json');
+  const keyPath = path.join(dir, '.cookie-key');
+  let authContent, keyBuffer;
+  try {
+    authContent = fs.readFileSync(authPath);
+    keyBuffer = fs.readFileSync(keyPath);
+  } catch (e) {
+    return { ok: false, error: `读不到桌面端登录态文件（${e.message}）。确认本机装过 DuMate 客户端并登录过。` };
+  }
+  return importAuthContent({ authContent, keyBuffer });
+}
+
+module.exports = {
+  importDesktopAuth,
+  importAuthContent,
+  decodeCookieKeyBase64,
+  DEFAULT_DIR,
+  SKIP_DOMAINS,
+  MAX_AUTH_CONTENT_BYTES,
+};
