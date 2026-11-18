@@ -35,6 +35,11 @@ package-lock.json
 web/package-lock.json
 .pnpm-store/
 
+# --- local Docker configuration / secrets ---
+.env
+.env.*
+!.env.example
+
 # --- OS ---
 Thumbs.db
 .DS_Store

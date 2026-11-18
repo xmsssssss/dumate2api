@@ -1,0 +1,25 @@
+services:
+  dumate2api:
+    build:
+      context: .
+    image: ${DUMATE_IMAGE:-dumate2api:local}
+    restart: unless-stopped
+    ports:
+      - "${DUMATE_BIND_ADDR:-127.0.0.1}:${DUMATE_GATEWAY_PORT:-9080}:9080"
+      - "${DUMATE_BIND_ADDR:-127.0.0.1}:${DUMATE_ADMIN_PORT:-9081}:9081"
+    environment:
+      DUMATE2API_HOST: 0.0.0.0
+      DUMATE2API_PORT: "9080"
+      DUMATE_ADMIN_HOST: 0.0.0.0
+      DUMATE_ADMIN_PORT: "9081"
+      DUMATE_ADMIN_GATEWAY_PORT: "9080"
+      DUMATE_ADMIN_DATA: /app/data
+      DUMATE2API_KEY: ${DUMATE2API_KEY:-}
+      DUMATE_DUMATE_SOURCE: ${DUMATE_DUMATE_SOURCE:-web}
+      DUMATE_QWENWORK_AUTOSTART: ${DUMATE_QWENWORK_AUTOSTART:-auto}
+      DUMATE_TRAEWORK_AUTOSTART: ${DUMATE_TRAEWORK_AUTOSTART:-auto}
+      DUMATE_QODER_AUTOSTART: ${DUMATE_QODER_AUTOSTART:-auto}
+      DUMATE_CORS_ORIGINS: ${DUMATE_CORS_ORIGINS:-}
+      DUMATE_PROXY: ${DUMATE_PROXY:-}
+    volumes:
+      - "${DUMATE_DATA_DIR:-./data}:/app/data"

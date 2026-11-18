@@ -1,0 +1,2 @@
+# Keep the Linux container entrypoint valid when checked out on Windows.
+docker/entrypoint.sh text eol=lf

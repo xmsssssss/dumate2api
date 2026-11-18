@@ -43,6 +43,47 @@ npm run admin              # 管理端 http://127.0.0.1:9081（另开终端）
 
 > 本仓库日常开发用 `start-dev.bat`（网关 9082 + 管理端 9083）；9080/9081 留给 `stable/` 快照对外服务，两者互不影响。
 
+## Docker 部署
+
+镜像会构建管理端前端，并在同一个容器内启动网关与管理端。两进程共享 `data/`
+持久卷和容器回环地址，因此管理端可以直接读取网关状态；默认只映射到宿主机
+`127.0.0.1`，不要在未配置反向代理和访问控制时改成公网监听。
+
+```bash
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+打开管理端：`http://127.0.0.1:9081`。网关：`http://127.0.0.1:9080`。
+首次启动时，管理端随机管理员口令只在容器日志中打印一次。登录管理端后，
+在「API Key」页签发网关密钥；也可以通过 `DUMATE2API_KEY` 环境变量提供固定密钥。
+
+```bash
+docker compose logs -f dumate2api
+```
+
+需要修改端口、数据目录或通道开关时，基于示例创建本地配置：
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+PowerShell 使用 `Copy-Item .env.example .env`。`.env` 已被 Git 忽略。升级与
+停止：
+
+```bash
+docker compose build --pull
+docker compose up -d
+docker compose down
+```
+
+`docker compose down` 不会删除宿主机的 `data/`；账号、Cookie、API Key、日志和
+管理员状态都在这里。容器内没有图形桌面，网页账号登录器不可用，请使用管理端
+的“手动粘贴 Cookie”方式，或先在桌面环境完成登录后迁移
+`web-accounts.json`。
+
 自检：
 
 ```bash
