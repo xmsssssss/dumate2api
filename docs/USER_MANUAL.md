@@ -1,6 +1,6 @@
 # DuMate2API 用户使用手册
 
-> 适用版本：2026-10（四通道 + 管理端 2.0） · 本手册面向**使用者**，面向开发者的架构与实现细节见 [CLAUDE.md](../CLAUDE.md)，快速概览见 [README](../README.md)。
+> 适用版本：2026-11（Docker 单端口 + 五通道） · 本手册面向**使用者**，面向开发者的架构与实现细节见 [CLAUDE.md](../CLAUDE.md)，快速概览见 [README](../README.md)。
 
 ---
 
@@ -40,40 +40,53 @@ DuMate2API 是运行在本机的**模型网关 + 进程管理器**，它把五�
 
 ### 2.1 前置条件
 
-- **Windows 10+**（依赖 PowerShell 进程查询、`%APPDATA%` 路径）
-- **Node.js >= 18**（网关零第三方依赖；前端构建与管理端登录器另有依赖）
+- **Docker Desktop / Docker Engine + Compose**，或 **Node.js >= 18**
+- 浏览器登录助手需要 Windows 10+ 与 Chrome 或 Edge
+- 桌面认证文件上传需要 DuMate 桌面端已登录
 - 至少配置**一条通道**的凭证（任一通道不可用不会阻断网关启动）
 
-### 2.2 启动
+### 2.2 Docker 启动（推荐）
 
-```bash
-git clone <repo-url> && cd dumate2api
-npm install          # 安装依赖（playwright-core 等管理端所需）
-npm start            # 网关 :9080，自动拉起 DuMate 后端 :8980
-npm run admin        # 管理端 :9081（另开终端）
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build
+docker compose logs -f dumate2api
 ```
 
-一键脚本（Windows）：
+浏览器打开唯一公开入口：
 
-| 脚本 | 作用 |
-|---|---|
-| `start.bat` | 启动网关 + 后端 |
-| `start-dev.bat` | 启动开发网关 :9082 + 管理端 :9083（日常开发用） |
-| `start-stable.bat` | 启动稳定版快照 :9080（对外服务用，**必须经它启动**） |
-| `start-web-gateway.bat` | 启动网页凭证独立网关 :9084 |
-| `stop.bat` | 停止网关进程树（不动 DuMate GUI 与 cc-switch） |
-| `restart.bat` | 重启 |
+```text
+http://127.0.0.1:9080
+```
 
-### 2.3 端口一览
+管理页面、管理 API 和模型 API 都使用这个端口。远程服务器可在 `.env` 中设置：
+
+```dotenv
+DUMATE_BIND_ADDR=0.0.0.0
+DUMATE_GATEWAY_PORT=9080
+```
+
+然后访问 `http://<服务器IP>:9080`。公网部署应增加防火墙、TLS 反向代理与来源限制。
+
+### 2.3 本地开发启动
+
+```powershell
+corepack enable
+pnpm install
+pnpm --dir web install
+pnpm --dir web run build
+start-dev.bat
+```
+
+`start-dev.bat` 同时启动公开入口 `9080` 和内部模型网关 `18081`。关闭该窗口会停止两个进程。
+
+### 2.4 端口一览
 
 | 端口 | 进程 | 说明 |
 |---|---|---|
-| 9080 | 稳定版网关 | 对外长期服务 |
-| 9081 | 管理端（默认） | `npm run admin` |
-| 9082 | 开发网关 | 开发调试 |
-| 9083 | 开发管理端 | 与 9082 配套，`start-dev.bat` |
-| 9084 | 网页凭证网关 | 多账号轮换跑模型 |
-| 8980 | DuMate 后端 | 网关自动拉起，无需手动管理 |
+| 9080 | 管理端 + 数据面代理 | **唯一公开端口**；管理页面与模型 API 共用 |
+| 18081 | 内部模型网关 | 容器内或本机回环监听，不对外发布 |
+| 8980 | DuMate 上游后端 | 历史桌面链路内部端口，不属于公开入口 |
 
 ---
 
@@ -82,21 +95,24 @@ npm run admin        # 管理端 :9081（另开终端）
 ### 3.1 登录管理端
 
 1. 首次启动管理端时，终端会打印**随机生成的管理员口令**（只显示这一次，请立即保存）。
-2. 浏览器打开 `http://127.0.0.1:9081`（或开发实例 9083），用 `admin` + 该口令登录。
-3. 忘记口令时可重设：
-   ```bash
+2. 浏览器打开 `http://127.0.0.1:9080`，用 `admin` + 该口令登录。
+3. Docker 部署下，忘记口令时可重设：
+   ```powershell
+   docker compose exec dumate2api node src/admin/server.js --reset-admin --password=你的新口令
+   ```
+   本地开发可直接运行：
+   ```powershell
    node src/admin/server.js --reset-admin --password=你的新口令
    ```
    重设后其它已登录会话会被踢下线。
 
-> **开发实例注意**：启动管理端时要带 `DUMATE_ADMIN_GATEWAY_PORT=9082`，否则界面读的是 9080（可能没启动）的数据。
-
 ### 3.2 配置各通道账号
 
-**百度搭子**（二选一）：
+**百度搭子**支持三种添加方式：
 
-- **桌面凭证**：安装 [DuMate 桌面客户端](https://cloud.baidu.com/doc/Dumate/index.html)并登录一次，之后不必再打开界面。cookie 过期时需重新打开客户端登录（唯一绕不过的一步）。
-- **网页凭证（默认，不装客户端）**：管理端「账号管理」→ 浏览器登录器登一次 `www.dumate.cn`（或手动粘贴 cookie）→ 可添加多个账号。**这是默认链路**，跳过桌面探测，短会话里直接可用。
+- **浏览器登录助手（推荐）**：管理端「账号管理 → 添加账号 → 浏览器登录助手」→ 下载并解压 ZIP → 在管理页生成 15 分钟有效的一次性配对码 → 运行 `start-login-helper.cmd` → 输入管理端地址和配对码 → 在打开的百度真实登录页完成登录。助手在本机读取 Cookie 后提交给管理端，不使用浏览器插件，也不要求服务器代理百度登录页。
+- **认证文件上传**：先在 [DuMate 桌面客户端](https://cloud.baidu.com/doc/Dumate/index.html)登录，再上传 `%APPDATA%\qianfan-desktop-app\auth.json` 和 `%APPDATA%\qianfan-desktop-app\.cookie-key`。Docker/远程部署读不到用户电脑的本地文件，因此必须由浏览器上传；服务端解密后只保存可用 Cookie，不保存原始文件。
+- **手动粘贴**：前两种方式不可用时，直接粘贴网页 Cookie。该方式最不直观，排障前优先检查其他两项。
 
 **千问办公 / TRAE Work / Qoder**（均为 OAuth 自取，不需要客户端）：
 
@@ -147,7 +163,7 @@ TRAE / Qoder / WorkBuddy 还有**区域视图**（顶栏「国内版 / 国际版
 回答「用了多少、每一条花的什么」：趋势图（请求数/Token/耗时/成功率/首字延迟）+ 逐条请求明细。每条记录带通道、模型、token 数、积分消耗（可按通道筛选）。
 
 ### 账号管理（搭子网页账号）
-**操作台**：增删账号、跑签到/任务/抽奖、开启任务自动轮询、浏览器登录器。
+**操作台**：增删账号、跑签到/任务/抽奖、开启任务自动轮询、启动浏览器登录助手。
 
 ### 登录态 / 各通道账号
 千问、TRAE、Qoder 的账号管理：查看 token 有效期、添加/删除账号、指定主账号（千问）、多账号切换。**refresh token 已过期的账号会标橙提示**——access token 到期后无法自动续期，需要重新登录。
@@ -166,8 +182,8 @@ TRAE / Qoder / WorkBuddy 还有**区域视图**（顶栏「国内版 / 国际版
 
 | 标签 | API 格式 | Base URL | Key | 模型 |
 |---|---|---|---|---|
-| Claude | `anthropic` | `http://127.0.0.1:9080` ← **不加** `/v1` | `nokey` | `model-text` |
-| Codex | `openai_responses` | `http://127.0.0.1:9080/v1` ← **要加** `/v1` | `nokey` | `model-text` |
+| Claude | `anthropic` | `http://127.0.0.1:9080` ← **不加** `/v1` | `dmk_...` | `model-text` |
+| Codex | `openai_responses` | `http://127.0.0.1:9080/v1` ← **要加** `/v1` | `dmk_...` | `model-text` |
 
 ### Codex CLI（config.toml）
 
@@ -179,6 +195,13 @@ name = "DuMate local proxy"
 base_url = "http://127.0.0.1:9080/v1"
 wire_api = "responses"          # Codex 0.155+ 只认 responses
 requires_openai_auth = true
+env_key = "DUMATE_API_KEY"
+```
+
+启动 Codex 前设置：
+
+```powershell
+$env:DUMATE_API_KEY = "dmk_..."
 ```
 
 ### Claude Code
@@ -286,18 +309,21 @@ Anthropic 协议接入 `http://127.0.0.1:9080`（裸路径 `/messages` 已支持
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DUMATE2API_PORT` / `_HOST` | `9080` / `127.0.0.1` | 网关监听 |
-| `DUMATE_REQUIRE_KEY` | 关闭 | 设 `1` 启用 API Key 校验。**对外暴露必须打开** |
+| `DUMATE_BIND_ADDR` / `DUMATE_GATEWAY_PORT` | `127.0.0.1` / `9080` | Docker 唯一公开端口的宿主机监听地址与端口 |
+| `DUMATE_ADMIN_HOST` / `DUMATE_ADMIN_PORT` | `127.0.0.1` / `9080` | 唯一公开入口；Docker 容器内监听 `0.0.0.0:9080` |
+| `DUMATE2API_HOST` / `DUMATE2API_PORT` | `127.0.0.1` / `9080` | 内部模型网关；Docker 中固定为 `127.0.0.1:18081`，不发布到宿主机 |
+| `DUMATE_ADMIN_GATEWAY_PORT` | `18081` | 管理端把模型请求转发到哪个内部网关端口 |
+| `DUMATE2API_KEY` | 空 | 可选的固定模型网关密钥，与管理端签发的 `dmk_...` 同时有效 |
+| `DUMATE_REQUIRE_KEY` | 已废弃 | 不能关闭鉴权；设为 `0` 仅触发启动警告 |
 | `DUMATE_DUMATE_SOURCE` | `auto` | 设 `web` = 搭子只用网页凭证，不需要装客户端 |
 | `DUMATE_WEB_FALLBACK` | 开启 | 设 `0` 关闭「桌面失效回落网页池」 |
-| `DUMATE_ADMIN_PORT` / `_GATEWAY_PORT` | `9081` / `9080` | 管理端监听 / 读哪个网关（开发实例设 `9082`） |
-| `DUMATE_ADMIN_DATA` | `<repo>/data` | 数据目录，管理端与网关**必须一致** |
+| `DUMATE_ADMIN_DATA` | `<repo>/data` | 数据目录；Docker 中为 `/app/data`，管理端与网关**必须一致** |
 | `DUMATE_QWENWORK_AUTOSTART` / `DUMATE_TRAEWORK_AUTOSTART` | `auto` | 设 `off` 关闭对应通道 |
 | `DUMATE_QWENWORK_USE_WASM` | 本地签名 | 设 `1` 切回官方 wasm 签名（退路，需装千问客户端） |
 | `DUMATE_AUTO_CHECKIN_HOUR` / `_MINUTE` | `9` / `17` | 每日自动签到时刻（**两个都要设**） |
 | `DUMATE_TASK_POLL_MINUTES` | `30` | 任务轮询间隔（`0` 关闭，<5 分钟会被拒） |
 | `DUMATE_LAG_MONITOR` | 开启 | 事件循环卡顿监控；`DUMATE_LAG_WARN_MS` 默认 2000ms 告警 |
-| `DUMATE2API_KEY` | — | **历史遗留死变量，无任何作用**。真实开关是 `DUMATE_REQUIRE_KEY` |
+| `DUMATE_PROXY` | 空 | 容器访问上游接口使用的出站代理；不代理百度登录页 |
 
 ---
 

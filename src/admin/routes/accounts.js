@@ -1,10 +1,13 @@
 // src/admin/routes/accounts.js - 网页端账号管理（多账号签到 / 抽奖 / 积分）
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const accounts = require('../../accounts');
 const web = require('../../dumate-web');
-const loginBrowser = require('../../login-browser');
-const loginWebProxy = require('../../login-web-proxy');
+const loginHelper = require('../../login-helper');
 const authImport = require('../../auth-import');
+const { createZip } = require('../../zip-store');
+const { clientIP } = require('../iputil');
 const webPool = require('../../web-pool');
 const accountPool = require('../../pool').pool;
 const taskRunner = require('../../task-runner');
@@ -359,10 +362,6 @@ function aggregateExpiring(packages, accountId, days = 30) {
     }));
 }
 
-function nativeLoginAvailable() {
-  return !!(loginBrowser.hasDisplay() && loginBrowser.findBrowser());
-}
-
 function createDesktopAccount(result, wantName, auditSource) {
   const created = accounts.create({
     cookie: result.cookie,
@@ -382,12 +381,19 @@ function createDesktopAccount(result, wantName, auditSource) {
   });
 }
 
-async function createBrowserAccount(cookie, wantName, auditSource) {
+async function createBrowserAccount(cookie, wantName, auditSource, opts = {}) {
   let info = null;
+  let infoError = '';
   try {
     info = await web.api.userInfo(cookie, { agent: web.agentFor(null) });
   } catch (e) {
     info = null;
+    infoError = e.message;
+  }
+  if (opts.requireUserInfo && (!info || !info.ok)) {
+    throw new Error(
+      `百度凭证验证失败：${info?.error || infoError || '上游未返回有效账号信息'}`,
+    );
   }
   const name = String(wantName || '').trim() || info?.nickname || '';
   const created = accounts.create({ cookie, name });
@@ -415,41 +421,18 @@ async function createBrowserAccount(cookie, wantName, auditSource) {
 
 const routes = [
   {
-    // 桌面端登录态直读导入（2026-11-07 清单项 6 尾巴）：解密本机
-    // auth.json（AES-256-GCM，排布实测见 src/auth-import.js 头注释），
-    // 免去 DevTools 复制 Cookie 的手工步骤。BDUSS 去重由 accounts.create
-    // 的重复检查兜底（同账号重复导入 409 如实报「已存在」）。
-    method: 'POST',
-    path: '/import-desktop',
-    handler: ({ res, body }) => {
-      const r = authImport.importDesktopAuth({ dir: body && body.dir });
-      if (!r.ok) return sendJSON(res, 400, r);
-      try {
-        const account = createDesktopAccount(
-          r,
-          body && body.name,
-          `via desktop auth.json（${r.cookie_count} 条 cookie）`,
-        );
-        return sendJSON(res, 200, {
-          ok: true,
-          cookie_count: r.cookie_count,
-          skipped_domains: r.skipped_domains,
-          account,
-        });
-      } catch (e) {
-        // 已存在同账号等：409 如实报，不吞
-        return sendJSON(res, 409, { ok: false, error: e.message });
-      }
-    },
-  },
-  {
     // Docker/远程部署读不到用户电脑上的桌面端文件。浏览器只负责把两份
     // 文件内容提交过来，解密、域过滤、去重与落库全部在服务器完成。
     method: 'POST',
     path: '/import-desktop-upload',
     handler: ({ res, body }) => {
       const authContent = body && body.authContent;
-      const keyBuffer = authImport.decodeCookieKeyBase64(body && body.cookieKeyBase64);
+      let keyBuffer;
+      try {
+        keyBuffer = authImport.decodeCookieKeyBase64(body && body.cookieKeyBase64);
+      } catch (e) {
+        keyBuffer = null;
+      }
       if (typeof authContent !== 'string' || !authContent) {
         return sendJSON(res, 400, { ok: false, error: '缺少 auth.json 内容' });
       }
@@ -479,77 +462,98 @@ const routes = [
     },
   },
   {
-    // 登录器：打开一个受控浏览器窗口，登录后自动抓 cookie。
-    // 这是「不依赖用户浏览器状态」的唯一自动路径——搭子没有登录票据接口，
-    // 而系统浏览器的 cookie 库在运行时被独占锁定。
+    // 本机助手通过一次性配对码提交登录 Cookie。管理端运行在远程 Docker
+    // 时无法读取用户电脑上的浏览器凭证，因此配对码就是这条公开路径的
+    // 安全边界：15 分钟 TTL、单次消费和来源 IP 限速。
+    method: 'GET',
+    path: '/login/helper/download',
+    handler: ({ res }) => {
+      try {
+        const root = path.resolve(__dirname, '..', '..', '..', 'login-helper');
+        const names = ['dumate-login-helper.ps1', 'start-login-helper.cmd', 'README.txt'];
+        const files = names.map((name) => ({
+          name,
+          data: fs.readFileSync(path.join(root, name)),
+        }));
+        const zip = createZip(files);
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': 'attachment; filename="dumate-login-helper.zip"',
+          'Content-Length': zip.length,
+          'Cache-Control': 'no-store',
+        });
+        res.end(zip);
+      } catch (e) {
+        return sendJSON(res, 500, { error: `登录助手包生成失败：${e.message}` });
+      }
+    },
+  },
+  {
+    // 本机助手没有管理端登录 Cookie，所以此路由必须公开；Cookie 只在
+    // 这个请求体里出现，之后由 createBrowserAccount 验证，绝不进入轮询快照。
+    method: 'POST',
+    path: '/login/helper/submit',
+    public: true,
+    handler: async ({ res, body, req }) => {
+      const cookie = accounts.normalizeCookie(body && body.cookie);
+      const claimed = loginHelper.claim(
+        body && body.pairing_code,
+        cookie,
+        { remoteKey: clientIP(req) || req.socket.remoteAddress || '' },
+      );
+      if (!claimed.ok) {
+        return sendJSON(res, claimed.status || 401, { error: claimed.error });
+      }
+      try {
+        const account = await createBrowserAccount(
+          claimed.cookie,
+          claimed.name,
+          'via local login helper',
+          { requireUserInfo: true },
+        );
+        const session = loginHelper.complete(claimed.session_id, account);
+        return sendJSON(res, 200, {
+          ok: true,
+          ...session,
+          account,
+        });
+      } catch (e) {
+        loginHelper.fail(claimed.session_id, e.message);
+        return sendJSON(res, 409, { ok: false, error: e.message });
+      }
+    },
+  },
+  {
+    // 生成一次性配对码。真正的百度登录在用户电脑上的 Chrome/Edge 临时
+    // 配置里完成，服务器不代理登录页，也不接收百度账号密码或短信验证码。
     method: 'POST',
     path: '/login/start',
-    handler: async ({ res, body }) => {
+    handler: ({ res, body }) => {
       const name = (body && body.name) || '';
-      const canUseNative = nativeLoginAvailable();
-      const mode = body && body.mode;
-      const useProxy = mode === 'proxy' || (mode !== 'browser' && !canUseNative);
-      const r = useProxy
-        ? loginWebProxy.start({ name })
-        : await loginBrowser.start({ name });
-      if (!r.ok) return sendJSON(res, 400, r);
+      const r = loginHelper.start({ name });
       require('../../admin/auth').audit(
         'admin',
         'web_login_start',
         '',
-        useProxy ? 'via docker login proxy' : (r.browser_path || 'via native browser'),
+        'via local login helper',
       );
-      return sendJSON(res, 200, { ...r, mode: useProxy ? 'proxy' : 'browser' });
+      return sendJSON(res, 200, r);
     },
   },
   {
-    // 轮询登录状态。成功时把 cookie 落库并清空暂存——同一份凭证不能入库两次。
+    // 只轮询助手会话状态，不返回 Cookie。
     method: 'GET',
     path: '/login/poll',
-    handler: async ({ res, req }) => {
+    handler: ({ res, req }) => {
       const params = new URL(req.url, 'http://localhost').searchParams;
       const sessionId = params.get('session_id');
-      const s = sessionId
-        ? loginWebProxy.snapshot(sessionId)
-        : { ...loginBrowser.snapshot(), mode: 'browser' };
-      if (s.status === 'success' && s.has_cookie) {
-        const cookie = sessionId
-          ? loginWebProxy.peekCookie(sessionId)
-          : loginBrowser.peekCookie();
-        if (!cookie) {
-          return sendJSON(res, 409, {
-            ...s,
-            status: 'failed',
-            message: '登录凭证已失效，请重新登录',
-          });
-        }
-        const wantName = params.get('name') || '';
-        try {
-          const account = await createBrowserAccount(
-            cookie,
-            wantName,
-            sessionId ? 'via browser login proxy' : 'via browser',
-          );
-          // 入库成功后才清掉服务端暂存；重复账号等失败时保留凭证，
-          // 页面不会因为一次入库错误把整轮登录结果吞掉。
-          if (sessionId) loginWebProxy.takeCookie(sessionId);
-          else loginBrowser.takeCookie();
-          return sendJSON(res, 200, {
-            ...s, status: 'saved', has_cookie: false,
-            account,
-          });
-        } catch (e) {
-          // 已存在同账号等：如实报错。凭证仍留在服务端会话中，便于重试
-          // 或排查；前端收到 409 后会停止轮询并直接展示原因。
-          return sendJSON(res, 409, {
-            ...s,
-            status: 'failed',
-            has_cookie: true,
-            message: e.message,
-          });
-        }
-      }
-      return sendJSON(res, 200, s);
+      const session = sessionId ? loginHelper.getSnapshot(sessionId) : null;
+      return sendJSON(res, 200, session || {
+        active: false,
+        mode: 'helper',
+        status: 'idle',
+        message: sessionId ? '登录会话不存在或已过期' : '',
+      });
     },
   },
   {
@@ -557,9 +561,12 @@ const routes = [
     path: '/login/cancel',
     handler: ({ res, body }) => {
       const sessionId = body && body.session_id;
-      return sendJSON(res, 200, sessionId
-        ? loginWebProxy.cancel(sessionId)
-        : loginBrowser.cancel());
+      return sendJSON(res, 200, (sessionId && loginHelper.cancel(sessionId)) || {
+        active: false,
+        mode: 'helper',
+        status: 'cancelled',
+        message: '已取消',
+      });
     },
   },
   {
@@ -567,21 +574,18 @@ const routes = [
     method: 'GET',
     path: '/login-url',
     handler: ({ res }) => {
-      const browserAvailable = nativeLoginAvailable();
       return sendJSON(res, 200, {
-        url: LOGIN_URL,
+        url: loginHelper.LOGIN_URL,
         steps: [
-          '点击链接，在打开的页面登录百度账号',
-          '登录成功后回到本页，打开浏览器开发者工具（F12）',
-          '切到 Application → Cookies → https://www.dumate.cn',
-          '全选复制所有 cookie，粘贴到下面的输入框',
+          '下载并解压本机登录助手',
+          '运行 start-login-helper.cmd，输入管理端地址和一次性配对码',
+          '在自动打开的 Chrome 或 Edge 中完成百度登录',
+          '本页会自动等待服务器验证并保存账号',
         ],
-        note: '百度登录态位于 baidu.com 域，网页无法直接读取浏览器 cookie，所以需要手动复制一次',
-        // 本机有图形界面且找到浏览器时仍用独立窗口；Docker/无头部署则由
-        // 服务端代理登录页，管理浏览器只访问同源地址，不接触百度 Cookie。
-        recommended_mode: browserAvailable ? 'browser' : 'proxy',
-        browser_available: browserAvailable,
-        proxy_available: true,
+        note: '助手只在本机读取 baidu.com 登录 Cookie，不保存百度密码，也不把凭证显示在管理页面',
+        recommended_mode: 'helper',
+        helper_available: true,
+        helper_download_url: '/api/admin/web-accounts/login/helper/download',
       });
     },
   },
@@ -1164,7 +1168,7 @@ const routes = [
     handler: async ({ res }) => {
       const list = accounts.load().accounts;
       const gatewayPort = parseInt(
-        process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '9080',
+        process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '18081',
         10,
       );
 
@@ -1440,7 +1444,7 @@ const routes = [
       // 惩罚态（冷却/熔断/禁用/余额快照）已随施工包 A 落盘到 pool-state.json,
       // 管理端能直接读——先吸纳网关 5s 防抖内新写的内容再出视图。
       const gatewayPort = parseInt(
-        process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '9080',
+        process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '18081',
         10,
       );
       accountPool.reloadIfChanged();

@@ -249,7 +249,6 @@ function withTimeout(promise, ms) {
   let timer;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(() => resolve(null), ms);
-    if (timer.unref) timer.unref();
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

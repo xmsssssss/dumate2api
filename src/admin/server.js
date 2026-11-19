@@ -1,7 +1,7 @@
 // src/admin/server.js - 管理系统入口：管理 API + 静态前端托管
 //
-// 独立进程、独立端口（默认 9081）。它不代理任何模型协议——网关 9080 已经
-// 在做那件事，再代理一次只会多一跳延迟和一个故障点。
+// 单端口入口：管理 API / 静态前端 / 模型数据面都从 9080 对外提供。
+// 模型网关本身只监听回环地址，由本进程按白名单转发，避免 Docker 暴露第二个端口。
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -38,10 +38,11 @@ const taskScheduler = require('../task-scheduler');
 // 保活排程随下方 taskScheduler.schedule() 在本进程唤醒（task-scheduler.js 内部
 // 调 keepalive.schedule()），网关进程不排——见 ../boot.js 文件头。
 const boot = require('../boot');
-const loginWebProxy = require('../login-web-proxy');
+const dataPlaneProxy = require('./data-plane-proxy');
 
-const PORT = parseInt(process.env.DUMATE_ADMIN_PORT || '9081', 10);
+const PORT = parseInt(process.env.DUMATE_ADMIN_PORT || '9080', 10);
 const HOST = process.env.DUMATE_ADMIN_HOST || '127.0.0.1';
+const GATEWAY_PORT = dataPlaneProxy.gatewayPort(process.env.DUMATE_ADMIN_GATEWAY_PORT);
 const DIST = path.resolve(__dirname, '..', '..', 'web', 'dist');
 const PREFIX = '/api/admin';
 
@@ -193,20 +194,6 @@ function handleRequest(req, res) {
   res._cors = cors.headersFor(req);
   const url = req.url.split('?')[0];
 
-  // 登录代理运行在 CSP sandbox 的不透明源中，不能要求它携带管理端
-  // Cookie；百度 Set-Cookie 由代理模块保管，也绝不转发给管理浏览器。
-  // 因此这组路径必须排在普通 OPTIONS 和管理端鉴权之前。
-  if (url.startsWith(loginWebProxy.LOGIN_PROXY_PREFIX)) {
-    if (req.method === 'OPTIONS') return loginWebProxy.handleOptions(req, res);
-    const status = url.match(
-      /^\/api\/admin\/web-accounts\/login\/proxy\/([^/]+)\/_status\/?$/,
-    );
-    if (status && req.method === 'GET') {
-      return loginWebProxy.sendStatus(req, res, decodeURIComponent(status[1]));
-    }
-    return loginWebProxy.handleProxy(req, res, url);
-  }
-
   // CORS preflight：仅白名单命中的 Origin 才回 ACAO。开发期 Vite(5173) 直连
   // 本端口需在 DUMATE_CORS_ORIGINS 里显式列出；生产同源不需要 CORS。
   if (req.method === 'OPTIONS') {
@@ -245,6 +232,10 @@ function handleRequest(req, res) {
       if (!res.headersSent) sendJSON(res, 500, { error: 'internal_error' });
       else res.end();
     });
+  }
+
+  if (dataPlaneProxy.isDataPlanePath(url)) {
+    return dataPlaneProxy.proxyDataPlane(req, res, { port: GATEWAY_PORT });
   }
 
   return serveStatic(req, res, url);
@@ -309,6 +300,7 @@ function start() {
 
   server.listen(PORT, HOST, () => {
     log(`✓ admin listening on http://${HOST}:${PORT}`);
+    log(`  model data plane -> http://127.0.0.1:${GATEWAY_PORT}`);
     if (!fs.existsSync(path.join(DIST, 'index.html'))) {
       log('⚠ web/dist/index.html missing — run `cd web && npm run build` to serve the UI');
     }

@@ -11,7 +11,7 @@ const { sendJSON } = require('../router');
 // 前端显示「未知」而不是编一个关闭。
 function gatewayRequireKey() {
   const port = parseInt(
-    process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '9080',
+    process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '18081',
     10,
   );
   return new Promise((resolveProbe) => {

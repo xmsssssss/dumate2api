@@ -21,8 +21,8 @@
       <template #description>
         <div>签到、抽奖、积分都属于网页端（dumate.baidu.com），与本地代理网关是两套东西。</div>
         <div class="mt-1">
-          登录态位于百度域（<code>baidu.com</code>）。本机部署可弹出登录窗口；
-          Docker/远程部署会通过管理端同源代理页登录，由服务器接收凭证。
+          登录态位于百度域（<code>baidu.com</code>）。浏览器登录使用本机登录助手读取凭证，
+          再通过一次性配对码提交给管理端；Docker/远程部署不经过服务器登录代理页。
         </div>
       </template>
     </a-alert>
@@ -52,7 +52,7 @@
       </a-empty>
 
       <a-row v-else :gutter="[16, 16]">
-        <a-col v-for="a in accounts" :key="a.id" :span="8">
+        <a-col v-for="a in accounts" :key="a.id" :xs="24" :md="12" :xl="8">
           <a-card size="small" :bordered="true" class="h-full">
             <div class="flex items-start justify-between">
               <div>
@@ -248,22 +248,20 @@
       >
         <template #message>
           <span v-if="pool?.gateway_online">
-            网关运行中 · 端口 {{ pool.gateway_port }} · 可用账号
+            模型网关运行中 · 当前入口 {{ adminOrigin }} · 可用账号
             {{ pool.health?.accounts_ready ?? 0 }} / {{ pool.health?.accounts_total ?? 0 }}
           </span>
           <span v-else>
-            网关未启动（端口 {{ pool?.gateway_port ?? 9084 }}）
+            模型网关未运行
           </span>
         </template>
         <template #description>
           <div v-if="!pool?.gateway_online">
-            启动方式：双击 <code>start-web-gateway.bat</code>，或运行
-            <code>node src\web-gateway.js</code>
+            请在启动管理端时同时启动模型网关，并查看管理端日志中的启动状态。
           </div>
           <div v-else>
             用下面的账号跑模型，多账号自动轮询。客户端把 Base URL 指向
-            <code>http://127.0.0.1:{{ pool.gateway_port }}</code> 即可，
-            协议与 9080 完全一致。
+            <code>{{ adminOrigin }}</code> 即可。
           </div>
         </template>
       </a-alert>
@@ -309,24 +307,37 @@
       v-model:open="addOpen"
       title="添加账号"
       :footer="null"
-      width="560"
+      width="min(92vw, 680px)"
       @cancel="cancelAddDialog"
     >
       <a-tabs v-model:activeKey="addMode">
-        <a-tab-pane key="browser" tab="浏览器登录（推荐）">
+        <a-tab-pane key="helper" tab="浏览器登录助手">
           <a-alert type="info" show-icon class="mb-3">
             <template #message>
-              {{ loginMode === 'proxy' ? '通过服务器代理页登录' : '点下面的按钮会打开一个浏览器窗口' }}
+              使用本机 Chrome / Edge 登录百度
             </template>
             <template #description>
-              <template v-if="loginMode === 'proxy'">
-                登录页由服务器代理打开，百度 Cookie 只保存在服务端会话中。
-                登录成功后自动写入账号池，无需手动复制任何东西。
-              </template>
-              <template v-else>
-                在这个窗口里登录百度账号，程序检测到登录成功后会自动获取凭证并关闭窗口。
-                无需手动复制任何东西。
-              </template>
+              <div>
+                下载并解压登录助手，在 Windows 本机运行。助手会打开独立浏览器窗口，
+                登录完成后读取百度 Cookie，并通过一次性配对码提交给当前管理端。
+              </div>
+              <div class="mt-2">
+                管理端地址
+                <code class="ml-1">{{ adminOrigin }}</code>
+                <a-tooltip title="复制管理端地址">
+                  <a-button type="text" size="small" @click="copyText(adminOrigin, '管理端地址')">
+                    <template #icon><CopyOutlined /></template>
+                  </a-button>
+                </a-tooltip>
+              </div>
+              <div class="mt-1">
+                <a :href="helperDownloadUrl || '/api/admin/web-accounts/login/helper/download'">
+                  <DownloadOutlined class="mr-1" />下载本机登录助手
+                </a>
+                <span class="ml-2 text-xs text-slate-500">
+                  Windows 10/11，需已安装 Chrome 或 Edge
+                </span>
+              </div>
             </template>
           </a-alert>
 
@@ -336,18 +347,24 @@
             </a-form-item>
           </a-form>
 
+          <div v-if="pairingCode" class="mb-3 rounded border border-slate-200 bg-slate-50 px-3 py-2">
+            <div class="mb-1 text-xs text-slate-500">一次性配对码（15 分钟内有效）</div>
+            <div class="flex items-center justify-between gap-3">
+              <code class="select-all font-mono text-base font-semibold tracking-wide">{{ pairingCode }}</code>
+              <a-tooltip title="复制配对码">
+                <a-button size="small" @click="copyText(pairingCode, '配对码')">
+                  <template #icon><CopyOutlined /></template>
+                </a-button>
+              </a-tooltip>
+            </div>
+          </div>
+
           <div v-if="loginSession && loginSession.status !== 'idle'" class="mb-3">
             <a-alert
               :type="loginAlertType"
               show-icon
               :message="loginAlertText"
-            >
-              <template v-if="loginSession?.login_url && loginSession?.status === 'waiting'" #description>
-                <a :href="loginSession.login_url" target="_blank" rel="noopener">
-                  代理页没有自动打开？点此继续
-                </a>
-              </template>
-            </a-alert>
+            />
           </div>
 
           <a-space>
@@ -357,13 +374,7 @@
               :disabled="loginSession?.status === 'waiting'"
               @click="startBrowserLogin"
             >
-              {{
-                loginSession?.status === 'waiting'
-                  ? '等待登录中…'
-                  : loginMode === 'proxy'
-                    ? '打开代理登录页'
-                    : '打开登录窗口'
-              }}
+              {{ loginSession?.status === 'waiting' ? '等待登录助手提交…' : '生成配对码并等待' }}
             </a-button>
             <a-button
               v-if="loginSession?.status === 'waiting'"
@@ -372,10 +383,6 @@
               取消
             </a-button>
           </a-space>
-
-          <div v-if="!browserAvailable && !proxyAvailable" class="text-xs text-red-600 mt-2">
-            服务端既没有可用浏览器，也未启用登录代理，请改用「手动粘贴」
-          </div>
         </a-tab-pane>
 
         <a-tab-pane key="manual" tab="手动粘贴">
@@ -416,7 +423,7 @@
           </a-button>
         </a-tab-pane>
 
-        <a-tab-pane key="desktop" tab="桌面端直读（最简）">
+        <a-tab-pane key="desktop" tab="认证文件上传">
           <a-alert type="info" show-icon class="mb-3">
             <template #message>导入 DuMate 桌面客户端的加密登录态</template>
             <template #description>
@@ -426,7 +433,7 @@
               <div class="mt-1">
                 <code>.cookie-key</code> 是隐藏文件；如果资源管理器里看不到，请开启“显示隐藏的项目”。
                 可先按 <code>Win+R</code>，输入 <code>%APPDATA%\qianfan-desktop-app</code> 直接打开目录。
-                解密在服务器完成，上传内容不会保存。
+                解密在服务器完成，上传内容不会保存。Docker / 远程部署也使用这里的文件上传。
               </div>
             </template>
           </a-alert>
@@ -437,14 +444,8 @@
             </a-form-item>
           </a-form>
 
-          <a-divider orientation="left">本机部署</a-divider>
-          <a-button type="primary" :loading="desktopImporting" block @click="importDesktop">
-            一键导入桌面端登录态
-          </a-button>
-
-          <a-divider orientation="left">Docker / 远程部署</a-divider>
           <a-space direction="vertical" style="width: 100%">
-            <div class="flex items-center gap-2">
+            <div class="upload-row">
               <a-upload
                 :show-upload-list="false"
                 accept=".json,application/json"
@@ -456,7 +457,7 @@
                 {{ desktopAuthFileName || '未选择' }}
               </span>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="upload-row">
               <a-upload
                 :show-upload-list="false"
                 accept=".cookie-key"
@@ -615,7 +616,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { App } from 'ant-design-vue'
-import { UploadOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, DownloadOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import client from '@/api/client'
 import { channelStore, isTraework, isQwenwork, isQoder, isWorkBuddy } from '@/stores/channel'
 import TraeworkAccounts from '@/components/traework/TraeworkAccounts.vue'
@@ -623,7 +624,14 @@ import QwenworkAccounts from '@/components/qwenwork/QwenworkAccounts.vue'
 import QoderAccounts from '@/components/qoder/QoderAccounts.vue'
 import WorkBuddyAccounts from '@/components/workbuddy/WorkBuddyAccounts.vue'
 import SessionBrowser from '@/components/SessionBrowser.vue'
-import type { WebAccount, AccountStatus, PoolData, PoolAccount } from '@/api/webaccounts'
+import type {
+  WebAccount,
+  AccountStatus,
+  PoolData,
+  PoolAccount,
+  BrowserLoginSession,
+  LoginUrlInfo,
+} from '@/api/webaccounts'
 
 // message 走 App.useApp() 的实例（App.vue 已包 <a-app>），静态 import 拿不到上下文
 const { message } = App.useApp()
@@ -674,19 +682,12 @@ const minuteOptions = [
 const verifyResult = ref<{ ok: boolean; nickname?: string; uid?: string; error?: string } | null>(null)
 
 const form = reactive({ name: '', cookie: '' })
-const addMode = ref<'browser' | 'manual' | 'desktop'>('browser')
-const browserAvailable = ref(true)
-const proxyAvailable = ref(true)
-const recommendedLoginMode = ref<'browser' | 'proxy'>('browser')
-const loginSession = ref<any>(null)
+const addMode = ref<'helper' | 'manual' | 'desktop'>('helper')
+const helperDownloadUrl = ref('')
+const loginSession = ref<BrowserLoginSession | null>(null)
+const pairingCode = ref('')
+const adminOrigin = window.location.origin
 let pollTimer: any = null
-let loginPopup: Window | null = null
-
-const loginMode = computed<'browser' | 'proxy'>(() => (
-  loginSession.value?.mode === 'proxy' || recommendedLoginMode.value === 'proxy'
-    ? 'proxy'
-    : 'browser'
-))
 
 const loginAlertType = computed(() => {
   const s = loginSession.value?.status
@@ -699,9 +700,7 @@ const loginAlertText = computed(() => {
   const s = loginSession.value
   if (!s) return ''
   if (s.status === 'waiting') {
-    return s.mode === 'proxy'
-      ? '登录代理页已打开，请在其中完成百度登录…'
-      : '已打开登录窗口，请在其中完成登录…'
+    return '等待本机登录助手提交百度登录凭证…'
   }
   if (s.status === 'saved') return `已添加账号：${s.account?.name ?? ''}`
   if (s.status === 'success') return '登录成功，正在保存…'
@@ -895,11 +894,10 @@ async function probeModel(a: PoolAccount) {
 
 async function loadLoginInfo() {
   const { data } = await client.get('/web-accounts/login-url')
-  loginUrl.value = data.url
-  loginSteps.value = data.steps
-  browserAvailable.value = data.browser_available !== false
-  proxyAvailable.value = data.proxy_available !== false
-  recommendedLoginMode.value = data.recommended_mode === 'proxy' ? 'proxy' : 'browser'
+  const info = data as LoginUrlInfo
+  loginUrl.value = info.url
+  loginSteps.value = info.steps
+  helperDownloadUrl.value = info.helper_download_url || ''
 }
 
 function openAdd() {
@@ -907,6 +905,7 @@ function openAdd() {
   form.cookie = ''
   verifyResult.value = null
   loginSession.value = null
+  pairingCode.value = ''
   desktopImportResult.value = null
   clearDesktopUpload()
   addOpen.value = true
@@ -918,17 +917,33 @@ function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 
-function closeLoginPopup() {
-  if (loginPopup) loginPopup.close()
-  loginPopup = null
+async function copyText(text: string, label: string) {
+  if (!text) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const input = document.createElement('textarea')
+      input.value = text
+      input.style.position = 'fixed'
+      input.style.opacity = '0'
+      document.body.appendChild(input)
+      input.select()
+      document.execCommand('copy')
+      input.remove()
+    }
+    message.success(`${label}已复制`)
+  } catch {
+    message.error(`复制${label}失败，请手动选择`)
+  }
 }
 
 function cancelAddDialog() {
   const sessionId = loginSession.value?.session_id
   const waiting = loginSession.value?.status === 'waiting'
   stopPoll()
-  closeLoginPopup()
   loginSession.value = null
+  pairingCode.value = ''
   if (waiting) {
     client.post('/web-accounts/login/cancel', sessionId ? { session_id: sessionId } : {})
       .catch(() => {})
@@ -936,32 +951,18 @@ function cancelAddDialog() {
 }
 
 async function startBrowserLogin() {
-  // 先同步占位，再等接口返回 URL；否则 axios 返回后 window.open
-  // 会被浏览器当作非用户手势触发而拦截。
-  loginPopup = loginMode.value === 'proxy'
-    ? window.open('about:blank', '_blank')
-    : null
-  if (loginPopup) loginPopup.opener = null
   try {
     const { data } = await client.post('/web-accounts/login/start', {
       name: form.name,
-      mode: recommendedLoginMode.value,
+      mode: 'helper',
     })
-    loginSession.value = data
-    if (data.mode === 'proxy' && data.login_url) {
-      if (loginPopup) loginPopup.location.href = data.login_url
-      else loginPopup = window.open(data.login_url, '_blank')
-      message.info('已打开代理登录页，请在其中登录')
-    } else {
-      if (loginPopup) loginPopup.close()
-      loginPopup = null
-      message.info('已打开登录窗口，请在其中登录')
-    }
+    loginSession.value = data as BrowserLoginSession
+    pairingCode.value = data.pairing_code || ''
+    message.success('配对码已生成，请运行本机登录助手')
     stopPoll()
-    pollTimer = setInterval(pollLogin, 1500)
+    pollTimer = setInterval(pollLogin, 1200)
   } catch (e: any) {
-    closeLoginPopup()
-    message.error(e?.response?.data?.error || '无法打开登录窗口')
+    message.error(e?.response?.data?.error || '无法生成配对码')
   }
 }
 
@@ -972,15 +973,16 @@ async function pollLogin() {
     if (loginSession.value?.session_id) params.set('session_id', loginSession.value.session_id)
     const suffix = params.toString() ? `?${params.toString()}` : ''
     const { data } = await client.get(`/web-accounts/login/poll${suffix}`)
-    loginSession.value = data
+    loginSession.value = data as BrowserLoginSession
     if (data.status === 'saved') {
       stopPoll()
-      closeLoginPopup()
+      pairingCode.value = ''
       message.success(`已添加账号：${data.account?.name ?? ''}`)
       await load()
       setTimeout(() => { addOpen.value = false }, 1200)
     } else if (data.status === 'failed' || data.status === 'cancelled') {
       stopPoll()
+      pairingCode.value = ''
       if (data.status === 'failed') message.error(data.message || '登录失败')
     }
   } catch (e: any) {
@@ -996,11 +998,11 @@ async function pollLogin() {
 
 async function cancelBrowserLogin() {
   stopPoll()
-  closeLoginPopup()
   await client.post('/web-accounts/login/cancel', {
     session_id: loginSession.value?.session_id,
   })
   loginSession.value = null
+  pairingCode.value = ''
 }
 
 async function saveManual() {
@@ -1063,9 +1065,8 @@ async function saveProxy() {
   }
 }
 
-// ── 桌面端直读导入（清单项 6 尾巴）──
+// ── 桌面端认证文件上传 ──
 // 解密在后端 src/auth-import.js（排布实测）；前端只触发并展示结果。
-const desktopImporting = ref(false)
 const desktopUploading = ref(false)
 const desktopImportResult = ref<{ ok: boolean; text: string } | null>(null)
 const desktopAuthFileName = ref('')
@@ -1108,26 +1109,6 @@ async function pickDesktopCookieKey(file: File) {
     message.error(e?.message || '读取 .cookie-key 失败')
   }
   return false
-}
-
-async function importDesktop() {
-  desktopImporting.value = true
-  desktopImportResult.value = null
-  try {
-    const { data: r } = await client.post('/web-accounts/import-desktop', { name: form.name })
-    desktopImportResult.value = {
-      ok: true,
-      text: `已导入 ${r.cookie_count} 条 cookie（跳过无关域 ${r.skipped_domains} 条）→ 账号「${r.account?.name}」`,
-    }
-    message.success('导入成功')
-    await load()
-  } catch (e: any) {
-    const msg = e?.response?.data?.error || e?.message || '导入失败'
-    desktopImportResult.value = { ok: false, text: msg }
-    message.error(msg)
-  } finally {
-    desktopImporting.value = false
-  }
 }
 
 async function importDesktopUpload() {
@@ -1255,5 +1236,16 @@ watch(() => channelStore.current, async () => {
   background: var(--lab-surface-2);
   border: 1px solid var(--lab-border);
   border-radius: var(--lab-radius-sm);
+}
+.upload-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+@media (max-width: 575px) {
+  .upload-row :deep(.ant-btn) {
+    width: 100%;
+  }
 }
 </style>

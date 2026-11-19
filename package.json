@@ -6,7 +6,6 @@
   "scripts": {
     "start": "node src/server.js",
     "admin": "node src/admin/server.js",
-    "web-gateway": "node src/web-gateway.js",
     "mcp": "node src/mcp-server.js --mcp",
     "cli": "node src/mcp-server.js cli",
     "mock": "node test/mock-upstream.js",

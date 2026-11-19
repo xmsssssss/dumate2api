@@ -38,7 +38,14 @@ function tmpStateFile() {
 
 // 快速建池:内存态（file=null 不落盘不启 flusher,测试用 flush 手动验证）
 function memPool(clock, extra = {}) {
-  return createPool({ file: null, flushMs: 0, now: clock.now, ...extra });
+  return createPool({
+    file: null,
+    flushMs: 0,
+    now: clock.now,
+    pickMode: 'rr',
+    pickGapMs: 0,
+    ...extra,
+  });
 }
 
 // ---------------------------------------------------------------------------

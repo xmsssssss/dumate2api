@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const filelock = require('./filelock');
 const jsonl = require('./jsonl');
+const ipTrust = require('./ip-trust');
 
 const ROOT = path.resolve(__dirname, '..');
 const LOG_DIR = process.env.DUMATE_ADMIN_DATA || path.join(ROOT, 'data');
@@ -175,8 +176,7 @@ function describeRequest(body, fallbackModel) {
 }
 
 function clientIP(req) {
-  const raw = (req.socket && req.socket.remoteAddress) || '';
-  return raw.startsWith('::ffff:') ? raw.slice(7) : raw;
+  return ipTrust.clientIP(req);
 }
 
 // 读日志，最新的在前。limit 与 offset 都按行计。

@@ -4,11 +4,10 @@ const discovery = require('../../discovery');
 const launcher = require('../../upstream-launcher');
 const livecfg = require('../../livecfg');
 
-// 要观察的网关端口。默认 9080（稳定版），开发实例通过 DUMATE_ADMIN_GATEWAY_PORT
-// 指向 9082——管理端与网关是两个独立进程，各自监听不同端口，不能让管理端
-// 写死去看 9080，否则开发实例会显示稳定版的数字。
+// 网关只在容器或本机内部监听。管理端通过这个端口读取状态；外部客户端
+// 始终访问管理端的公开端口，由 data-plane-proxy 转发到内部网关。
 const PROXY_PORT = parseInt(
-  process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '9080',
+  process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '18081',
   10,
 );
 

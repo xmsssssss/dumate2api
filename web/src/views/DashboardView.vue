@@ -1483,7 +1483,6 @@
               <a-tag :color="dash?.upstream.gateway_online ? 'green' : 'red'">
                 {{ dash?.upstream.gateway_online ? '正常' : '未启动' }}
               </a-tag>
-              <span class="text-xs text-slate-400 ml-1">:{{ dash?.upstream.gateway_port ?? 9084 }}</span>
             </a-descriptions-item>
             <a-descriptions-item label="可用账号">
               <template v-if="dash?.upstream.accounts_ready !== null && dash?.upstream.accounts_ready !== undefined">
@@ -1497,11 +1496,12 @@
               </template>
               <span v-else class="text-slate-400">—</span>
             </a-descriptions-item>
-            <a-descriptions-item label="本地代理">
+            <a-descriptions-item label="模型入口">
               <a-tag :color="status?.gateway.online ? 'green' : 'red'">
                 {{ status?.gateway.online ? '在线' : '离线' }}
               </a-tag>
-              <span class="text-xs text-slate-400 ml-1">:{{ status?.gateway.port ?? 9080 }}</span>
+              <!-- 容器内的 18081 不对外发布；用户能访问的是管理端公开端口。 -->
+              <span class="text-xs text-slate-400 ml-1">:{{ status?.admin.port ?? 9080 }}</span>
             </a-descriptions-item>
             <a-descriptions-item label="上游端口">
               {{ status?.upstream.port ?? '—' }}

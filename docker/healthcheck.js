@@ -20,8 +20,8 @@ function check(port, path) {
 }
 
 Promise.all([
-  check(Number(process.env.DUMATE2API_PORT || 9080), '/health'),
-  check(Number(process.env.DUMATE_ADMIN_PORT || 9081), '/api/admin/healthz'),
+  check(Number(process.env.DUMATE_ADMIN_PORT || 9080), '/health'),
+  check(Number(process.env.DUMATE_ADMIN_PORT || 9080), '/api/admin/healthz'),
 ]).catch((error) => {
   console.error(error.message);
   process.exit(1);

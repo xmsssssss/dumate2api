@@ -41,19 +41,21 @@ export interface LoginUrlInfo {
   url: string
   steps: string[]
   note: string
-  recommended_mode: 'browser' | 'proxy'
-  browser_available: boolean
-  proxy_available: boolean
+  recommended_mode: 'helper'
+  helper_available?: boolean
+  helper_download_url?: string
 }
 
 export interface BrowserLoginSession {
   active?: boolean
   status: 'idle' | 'waiting' | 'success' | 'saved' | 'failed' | 'cancelled'
-  mode: 'browser' | 'proxy'
+  mode: 'helper'
   message?: string
   session_id?: string
   login_url?: string
   has_cookie?: boolean
+  pairing_code?: string
+  helper_download_url?: string
   account?: WebAccount
 }
 

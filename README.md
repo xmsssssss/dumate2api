@@ -9,7 +9,7 @@
 
 **五条上游，三协议网关。** 把百度搭子（DuMate）、千问办公、TRAE Work、Qoder、WorkBuddy 统一转换为 **OpenAI / Anthropic / Google 兼容 API**，供 Codex CLI、Claude Code、cc-switch 等客户端使用。
 
-网关默认只监听本机，所有模型端点强制校验 API Key；项目同时提供网页管理端、账号与凭证管理、签到、积分、额度和请求日志。
+Docker 部署只发布一个端口：管理页面和模型 API 共用 `9080`。所有模型端点强制校验 API Key；项目同时提供账号与凭证管理、签到、积分、额度和请求日志。
 
 <p align="center">
   <img src="assets/screenshots/dashboard.png" alt="管理端仪表盘" width="860" />
@@ -40,27 +40,35 @@ flowchart LR
 
 ## Docker 部署
 
-推荐使用 Docker Compose。镜像会安装网关依赖、构建 `web/dist`，然后在同一个容器中启动网关与管理端。
+推荐使用 Docker Compose。镜像会在构建阶段生成管理端前端，并在同一个容器中启动管理端与内部模型网关。
 
-```bash
+```powershell
+Copy-Item .env.example .env
 docker compose up -d --build
 docker compose ps
 ```
 
-默认地址：
+唯一公开入口：
 
-- 管理端：`http://127.0.0.1:9081`
-- 网关：`http://127.0.0.1:9080`
+```text
+http://127.0.0.1:9080
+```
+
+- `/` 和 `/api/admin/*`：管理页面与管理 API
+- `/v1/*`、`/v1beta/*`、`/responses`、`/messages` 等：模型 API
+- `/health`、`/ping`、`/metrics`：健康检查与指标
+
+容器内的模型网关监听 `127.0.0.1:18081`，仅供同容器管理端转发，不会发布到宿主机。宿主机端口映射始终只有一个。
 
 首次启动时，管理端会在容器日志中打印一次 `admin` 初始密码：
 
-```bash
+```powershell
 docker compose logs -f dumate2api
 ```
 
 容器默认共享 `/app/data`，宿主机对应目录为 `./data`。停止服务不会删除账号、Cookie、API Key、日志或管理员状态：
 
-```bash
+```powershell
 docker compose down
 ```
 
@@ -68,17 +76,13 @@ docker compose down
 
 默认配置可直接运行。需要修改端口、监听地址或数据目录时，创建本地 `.env`：
 
-```bash
-# Linux / macOS
-cp .env.example .env
-
-# Windows PowerShell
+```powershell
 Copy-Item .env.example .env
 ```
 
 编辑 `.env` 后重新启动：
 
-```bash
+```powershell
 docker compose up -d
 ```
 
@@ -86,66 +90,85 @@ docker compose up -d
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DUMATE_BIND_ADDR` | `127.0.0.1` | 宿主机监听地址，默认只允许本机访问 |
-| `DUMATE_GATEWAY_PORT` | `9080` | 网关宿主机端口 |
-| `DUMATE_ADMIN_PORT` | `9081` | 管理端宿主机端口 |
+| `DUMATE_BIND_ADDR` | `127.0.0.1` | 唯一公开端口的宿主机监听地址 |
+| `DUMATE_GATEWAY_PORT` | `9080` | 唯一公开端口的宿主机端口 |
 | `DUMATE_DATA_DIR` | `./data` | 账号、密钥、日志和管理状态的持久化目录 |
 | `DUMATE_IMAGE` | `dumate2api:local` | Compose 使用的镜像名 |
 
-不要在没有反向代理、TLS 和访问控制的情况下直接把端口暴露到公网。API Key 是强制要求，但不能替代网络层防护。
+远程服务器部署时，在 `.env` 中设置：
+
+```dotenv
+DUMATE_BIND_ADDR=0.0.0.0
+DUMATE_GATEWAY_PORT=9080
+```
+
+然后访问 `http://<服务器IP>:9080`。公网环境必须在防火墙或反向代理层再加 TLS、来源限制和访问控制；管理端登录 Cookie 不应长期通过明文 HTTP 传输。
 
 ### 容器中的账号登录
 
-容器不需要图形桌面。DuMate 账号管理提供两种适合远程部署的方式：
+容器不需要图形桌面，也不会把百度登录页代理到服务器。浏览器登录由用户电脑上的 Windows 登录助手完成：
 
-- **浏览器登录（推荐）**：管理端点“浏览器登录”后，由服务端登录代理打开百度登录页；完成短信或账号登录后，Cookie 会回到容器内的账号池，不依赖宿主机安装浏览器。
-- **桌面端认证文件上传**：在已登录 DuMate 的电脑上打开 `%APPDATA%\qianfan-desktop-app`，上传 `auth.json` 与 `.cookie-key`。服务端解密后只保存可用的登录 Cookie，原文件不会落盘。
+1. 打开管理端，进入“账号管理 → 添加账号 → 浏览器登录助手”。
+2. 下载登录助手 ZIP 并解压。压缩包包含 `start-login-helper.cmd`、`dumate-login-helper.ps1` 和说明文件。
+3. 在管理页生成一次性配对码。配对码 15 分钟内有效，只能使用一次。
+4. 双击 `start-login-helper.cmd`，输入当前管理端地址和配对码。
+5. 助手会用独立的临时 Chrome/Edge 配置打开真实百度登录页。完成登录后，助手读取 Cookie 并提交给管理端。
 
-登录代理和账号上游共用 `DUMATE_PROXY`。如果百度需要经代理访问，请在 `.env` 中配置容器内可达的代理地址：
+登录助手直接连接用户指定的管理端，不依赖浏览器插件，也不经过服务器端百度登录代理。服务端会调用上游账号信息接口验证，验证成功后才会写入账号池；配对码和 Cookie 不会出现在轮询接口中。
+
+桌面端认证文件上传作为备用方式。先在 DuMate 桌面端完成登录，再在管理页选择下面两个文件：
+
+```text
+%APPDATA%\qianfan-desktop-app\auth.json
+%APPDATA%\qianfan-desktop-app\.cookie-key
+```
+
+`.cookie-key` 是隐藏文件，可在资源管理器开启“显示隐藏的项目”，或按 `Win+R` 输入 `%APPDATA%\qianfan-desktop-app` 直接打开目录。服务端解密后只保存可用的登录 Cookie，原始上传文件不会落盘。
+
+账号上游仍共用 `DUMATE_PROXY`。如果容器访问百度接口需要代理，请在 `.env` 中配置容器内可达的代理地址：
 
 ```dotenv
 DUMATE_PROXY=http://172.17.0.1:7897
 ```
 
-容器里的 `127.0.0.1` 指容器自身，不能直接访问宿主机代理。Linux 可用 Docker 网桥地址（常见为 `172.17.0.1`）或宿主机内网地址；macOS / Windows 可使用 `host.docker.internal`。代理也可直接填远端 HTTP 代理。修改后必须重建并重启容器：
+容器里的 `127.0.0.1` 指容器自身，不能直接访问宿主机代理。Linux 可用 Docker 网桥地址（常见为 `172.17.0.1`）或宿主机内网地址；macOS / Windows 可使用 `host.docker.internal`。修改后必须重建并重启容器：
 
-```bash
+```powershell
 docker compose up -d --build
 docker compose logs -f dumate2api
 ```
 
-若登录代理返回 `502`，页面会显示目标域名和 Node 错误码：
+登录助手不经过服务器登录代理页，但最终账号验证仍由容器访问百度接口。若返回网络错误，先检查容器到百度接口或代理的连通性：
 
 - `ENOTFOUND` / `EAI_AGAIN`：容器 DNS 或代理域名解析失败。
 - `ECONNREFUSED`：代理地址不可达，或代理端口写错。
 - `ETIMEDOUT` / `ECONNRESET`：容器到代理的网络超时，或被代理主动断开。
 
-只重启旧容器不会更新镜像；拉取新代码后要使用 `docker compose up -d --build`。
+只重启旧容器不会更新镜像或登录助手下载包；拉取新代码后要使用 `docker compose up -d --build`。
 
 ## 首次登录与 API Key
 
-1. 打开 `http://127.0.0.1:9081`，用户名使用 `admin`。
+1. 打开 `http://127.0.0.1:9080`，用户名使用 `admin`。
 2. 从 `docker compose logs` 取得首次启动时打印的随机密码并登录。
 3. 在“账号管理”中切换到目标通道，添加账号、完成 OAuth，或导入 Cookie / Token。
 4. 在“API Key”页面创建密钥并妥善保存。签发的密钥形如 `dmk_...`。
 5. 也可以在 `.env` 中设置固定密钥 `DUMATE2API_KEY=...`，然后执行 `docker compose up -d` 使其生效。
 
-> **鉴权已强制开启。** 除 `/health` 与 `/ping` 外，所有端点都必须带密钥。`DUMATE_REQUIRE_KEY` 已废弃；即使设为 `0`，也只会打印警告，不能关闭鉴权。
+> **鉴权已强制开启。** 除 `/health`、`/ping` 等探针外，所有模型端点都必须带密钥。`DUMATE_REQUIRE_KEY` 已废弃；即使设为 `0`，也只会打印警告，不能关闭鉴权。
 
-网关健康检查：
+同一端口上的健康检查：
 
-```bash
+```powershell
 curl http://127.0.0.1:9080/health
 ```
 
 最小请求示例：
 
-```bash
-export DUMATE_API_KEY='dmk_...'
-
-curl http://127.0.0.1:9080/v1/chat/completions \
-  -H "Authorization: Bearer $DUMATE_API_KEY" \
-  -H "Content-Type: application/json" \
+```powershell
+$env:DUMATE_API_KEY = 'dmk_...'
+curl.exe http://127.0.0.1:9080/v1/chat/completions `
+  -H "Authorization: Bearer $env:DUMATE_API_KEY" `
+  -H "Content-Type: application/json" `
   -d '{"model":"model-text","messages":[{"role":"user","content":"hello"}]}'
 ```
 
@@ -222,26 +245,31 @@ export ANTHROPIC_MODEL='model-text'
 
 要求 Node.js 18 或更高版本。管理端前端源码在 `web/`，`web/dist` 未提交，因此首次本地运行必须先构建：
 
-```bash
+```powershell
 corepack enable
 pnpm install
 pnpm --dir web install
 pnpm --dir web run build
 ```
 
-启动网关：
+终端一启动内部模型网关：
 
-```bash
+```powershell
+$env:DUMATE2API_HOST = '127.0.0.1'
+$env:DUMATE2API_PORT = '18081'
 pnpm start
 ```
 
-另开一个终端启动管理端：
+终端二启动唯一公开入口：
 
-```bash
+```powershell
+$env:DUMATE_ADMIN_HOST = '127.0.0.1'
+$env:DUMATE_ADMIN_PORT = '9080'
+$env:DUMATE_ADMIN_GATEWAY_PORT = '18081'
 pnpm run admin
 ```
 
-默认地址同样为网关 `http://127.0.0.1:9080`、管理端 `http://127.0.0.1:9081`。若管理端提示 `web/dist/index.html missing`，说明前端尚未构建。
+本地开发同样只访问 `http://127.0.0.1:9080`。管理端会把模型请求转发到内部网关 `18081`。若管理端提示 `web/dist/index.html missing`，说明前端尚未构建。
 
 Windows 日常开发可以使用：
 
@@ -249,7 +277,7 @@ Windows 日常开发可以使用：
 start-dev.bat
 ```
 
-该脚本使用网关 `9082`、管理端 `9083`，不会占用 `stable/` 快照常用的 `9080/9081`。
+该脚本同时启动公开入口 `9080` 和内部模型网关 `18081`。
 
 ## 管理端
 
@@ -287,17 +315,17 @@ start-dev.bat
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DUMATE2API_HOST` / `DUMATE2API_PORT` | `127.0.0.1` / `9080` | 网关监听地址与端口 |
+| `DUMATE2API_HOST` / `DUMATE2API_PORT` | `127.0.0.1` / `9080` | 内部模型网关监听地址与端口；Docker 中为 `127.0.0.1:18081`，不发布到宿主机 |
 | `DUMATE2API_KEY` | 空 | 可选的固定网关密钥；与管理端签发的密钥同时有效 |
 | `DUMATE_REQUIRE_KEY` | 已废弃 | 不能关闭鉴权；设为 `0` 仅触发启动警告 |
-| `DUMATE_ADMIN_HOST` / `DUMATE_ADMIN_PORT` | `127.0.0.1` / `9081` | 管理端监听地址与端口 |
-| `DUMATE_ADMIN_GATEWAY_PORT` | `9080` | 管理端读取哪个网关实例的状态 |
+| `DUMATE_ADMIN_HOST` / `DUMATE_ADMIN_PORT` | `127.0.0.1` / `9080` | 唯一公开入口的监听地址与端口 |
+| `DUMATE_ADMIN_GATEWAY_PORT` | `18081` | 管理端转发到的内部模型网关端口 |
 | `DUMATE_ADMIN_DATA` | `data` | 管理端数据目录 |
 | `DUMATE_DUMATE_SOURCE` | `web` | DuMate 凭证来源；`web` 只用网页凭证，`auto` 为桌面优先并回落网页 |
 | `DUMATE_QWENWORK_AUTOSTART` / `DUMATE_TRAEWORK_AUTOSTART` / `DUMATE_QODER_AUTOSTART` | `auto` | 设为 `off` 可关闭对应通道自动启动 |
 | `DUMATE_AUTO_CHECKIN_HOUR` / `DUMATE_AUTO_CHECKIN_MINUTE` | `9` / `17` | 每日自动签到时间，两个变量需同时设置 |
 | `DUMATE_CORS_ORIGINS` | 空 | 管理端 CORS 白名单；默认为 fail-closed |
-| `DUMATE_PROXY` | 空 | 全局出站代理；同时用于账号上游和网页登录代理 |
+| `DUMATE_PROXY` | 空 | 容器出站代理，仅用于访问上游接口；不代理百度登录页 |
 
 完整变量表与通道协议说明见 [CLAUDE.md](CLAUDE.md) 和 `docs/CHANNEL-*.md`。
 
@@ -323,7 +351,7 @@ node test/verify-fallback-stream-pipe.js
 
 | 文件 | 内容 | 敏感度 |
 |---|---|---|
-| `keys.json` | 管理端签发的 API Key，仅保存 SHA-256 | 低 |
+| `keys.json` | 管理端签发的 API Key，保存 SHA-256 与完整明文 | 高 |
 | `web-accounts.json` | DuMate 网页账号与 Cookie，Cookie 明文保存 | 高 |
 | `qwenwork-accounts.json` | QwenWork OAuth 凭证与 refresh token | 高 |
 | `traework-accounts.json` | TRAE Work 凭证与 refresh token | 高 |

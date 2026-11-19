@@ -144,7 +144,6 @@ function sleepCtx(ms, token) {
   if (!(ms > 0)) return Promise.resolve(true);
   return new Promise((resolve) => {
     const t = setTimeout(() => done(true), ms);
-    if (t.unref) t.unref();
     const onAbort = () => done(false);
     token.on(onAbort);
     function finished() { token.off(onAbort); clearTimeout(t); }

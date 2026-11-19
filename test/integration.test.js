@@ -313,6 +313,7 @@ test('qwenwork.send 端到端（假上游）：失败账号进冷却、故障转
     calls,
     ensureAccount: async (store, account) => ({ id: account.id, uid: `uid-${account.id}`, accessToken: `tok-${account.id}`, machineId: `mid-${account.id}` }),
     resolveModelKey: (m) => String(m || 'pro'),
+    hasFunctionTools: () => 0,
     buildBody: (k) => JSON.stringify({ model: k }),
     post: async (url, body, headers) => {
       const uid = headers && headers['x-fake-uid'];

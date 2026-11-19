@@ -349,10 +349,9 @@ const routes = [
     method: 'GET',
     path: '/gateway-list',
     handler: async ({ res }) => {
-      // 同 system.js：默认看 9080（稳定版），开发实例用
-      // DUMATE_ADMIN_GATEWAY_PORT 指向 9082，避免读到稳定版的模型列表
+      // 同 system.js：管理端直接读取内部网关，外部客户端只访问公开入口。
       const port = parseInt(
-        process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '9080',
+        process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '18081',
         10,
       );
       // 网关鉴权强制（2026-11-01）后 /v1/models 一律要求 key。管理端自己

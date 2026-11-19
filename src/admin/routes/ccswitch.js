@@ -54,7 +54,7 @@ const DEFAULT_TIER_COUNT = 4;
 
 /** 客户端该连哪个网关：与管理端看的是同一个实例 */
 function gatewayBase() {
-  const port = process.env.DUMATE_ADMIN_GATEWAY_PORT || process.env.DUMATE2API_PORT || '9080';
+  const port = process.env.DUMATE_ADMIN_PORT || '9080';
   return `http://127.0.0.1:${port}`;
 }
 
