@@ -8,7 +8,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dumate-trae-gateway-'));
+const { tmpDir } = require('../helpers/tmpdir');
+const tmp = tmpDir('dumate-trae-gateway');
 process.env.DUMATE_ADMIN_DATA = tmp;
 
 const keys = require('../../src/keys');
@@ -20,6 +21,24 @@ const tw = require('../../src/traework');
 test.after(() => {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) { /* 清理失败不影响结果 */ }
 });
+
+/**
+ * 直接写账号文件（绕过 auth.save）。
+ *
+ * **必须显式推进 mtime**：`traework/auth.load()` 按 mtimeMs 失效重读，而 Windows
+ * 的文件时间戳粒度较粗——同一毫秒内连写两次会得到相同的 mtime，缓存于是继续
+ * 返回上一次的数据，用例随机失败（本文件在 2026-11-08 的全量回归里就偶发过：
+ * 「全部账号关闭模型请求」读到上一条用例的两个账号，ready 仍是 true）。
+ * 这不是实现缺陷（真实写入走 auth.save()，它会显式更新 cache），是用例自己的
+ * 前置条件没做全。
+ */
+function writeAccounts(list, bump) {
+  const file = authStore.filePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ accounts: list }), 'utf8');
+  const t = Date.now() + (bump || 0) * 1000;
+  try { fs.utimesSync(file, new Date(t), new Date(t)); } catch (e) { /* 时间戳改不动就用原值 */ }
+}
 
 test('Key 模型白名单：fnmatch 通配、大小写不敏感、无通配符仍是精确匹配', () => {
   assert.strictEqual(keys.modelMatches(['Gemini-*'], 'gemini-2.5-pro'), true);
@@ -36,15 +55,11 @@ test('Key 模型白名单：fnmatch 通配、大小写不敏感、无通配符�
 });
 
 test('账号两态：modelEnabled 只拦对话，findUsable 保留签到/保活', () => {
-  const file = authStore.filePath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({
-    accounts: [
-      { id: 1, enabled: true, modelEnabled: false, accessToken: 'a', refreshToken: 'r', credits: 10 },
-      { id: 2, enabled: true, accessToken: 'a', refreshToken: 'r', credits: 20 },
-      { id: 3, enabled: false, accessToken: 'a', refreshToken: 'r', credits: 30 },
-    ],
-  }), 'utf8');
+  writeAccounts([
+    { id: 1, enabled: true, modelEnabled: false, accessToken: 'a', refreshToken: 'r', credits: 10 },
+    { id: 2, enabled: true, accessToken: 'a', refreshToken: 'r', credits: 20 },
+    { id: 3, enabled: false, accessToken: 'a', refreshToken: 'r', credits: 30 },
+  ], 1);
   assert.deepStrictEqual(authStore.findUsable().map((a) => a.id), [1, 2]);
   assert.deepStrictEqual(authStore.findModelUsable().map((a) => a.id), [2]);
   const list = authStore.list();
@@ -58,16 +73,7 @@ test('账号两态：modelEnabled 只拦对话，findUsable 保留签到/保活'
 });
 
 test('全部账号关闭模型请求：status 明确报出且仍是已登录，不伪装成无账号', () => {
-  const file = authStore.filePath();
-  fs.writeFileSync(file, JSON.stringify({
-    accounts: [{ id: 1, enabled: true, modelEnabled: false, accessToken: 'a', refreshToken: 'r' }],
-  }), 'utf8');
-  // **必须把 mtime 推远**：auth.js 按 mtime 失效重读，而上一条用例刚写过同一个文件。
-  // 两次写在同一个毫秒内完成时 mtimeMs 相同 → 缓存不失效 → 这里读到上一条的
-  // 3 个账号（其中 has modelEnabled 的号）→ ready 变成 true，断言随机失败。
-  // 实测本机 3 次里能中 1 次（2026-11-16）。推 mtime 比 sleep 更确定。
-  const later = new Date(Date.now() + 2000);
-  fs.utimesSync(file, later, later);
+  writeAccounts([{ id: 1, enabled: true, modelEnabled: false, accessToken: 'a', refreshToken: 'r' }], 2);
   const st = tw.status();
   assert.strictEqual(st.ready, false);
   assert.strictEqual(st.loggedIn, true);

@@ -247,7 +247,8 @@ const MODEL_QUEUE_TEXT = /"modelKey"\s*:/i;
  * 一类参数（实测上游按队列长度给 7015 秒）。下限 1000 保留旧口径——0 会把
  * 封顶变成 0，等于关掉封顶，那会让上游给的 7015 秒照单全收。
  *
- * 解析实现在 `src/throttle.js`（唯一一处），本文件不读 process.env。
+ * 该字段是千问与 Qoder **共用**的上限；解析实现在 `src/throttle.js`（唯一一处），
+ * 本文件不读 process.env。
  */
 function throttleMaxMs() {
   return throttle.throttleMaxMs().value;
@@ -267,11 +268,19 @@ function throttleMaxMs() {
  *
  * 取 5 秒：够挡住「同一秒连打」的自我放大，又短到下一轮重试就能真实触达上游。
  * 与 `QUEUE_HANG_COOLDOWN_MS` 同一量级，两者都是「排队不是账号坏了」的处置。
+ *
+ * 2026-11-08（P0-3）起现读 `qoder/runtime.js` 的 queue.cooldownMs。
  */
-const QUEUE_THROTTLE_COOLDOWN_MS = Math.max(
-  0,
-  parseInt(process.env.DUMATE_QODER_QUEUE_COOLDOWN_MS || '5000', 10) || 5000,
-);
+function queueThrottleCooldownMs() {
+  try {
+    const v = Number(require('./qoder/runtime').pick('queue.cooldownMs', -1));
+    if (Number.isFinite(v) && v >= 0) return v;
+  } catch (e) { /* 同上 */ }
+  return Math.max(0, parseInt(process.env.DUMATE_QODER_QUEUE_COOLDOWN_MS || '5000', 10) || 5000);
+}
+
+// 兼容取值的懒代理见文件末尾（module.exports 赋值之后）——在赋值之前定义会被覆盖。
+
 
 /**
  * 「排队挂起」类：上游接了请求却没内容，由 chat.js 的计时器主动断开
@@ -462,7 +471,7 @@ function classifyCore(err) {
     // CALL_COUNT_LIMIT（真·调用配额耗尽，等久了确实会恢复）不同。
     const isQueue = QUEUE_TEXT.test(unescapeDeep(full));
     if (isQueue) {
-      out.retryAfterMs = QUEUE_THROTTLE_COOLDOWN_MS;
+      out.retryAfterMs = queueThrottleCooldownMs();
     } else {
       const ms = throttleRetryMs(full);
       if (ms) out.retryAfterMs = Math.min(ms, throttleMaxMs());
@@ -517,7 +526,19 @@ module.exports = {
   isDeterministic,
   isAuthReject, AUTH_REJECT_TEXT,
   isContentPolicy, CONTENT_POLICY_TEXT,
-  QUEUE_TEXT, QUEUE_THROTTLE_COOLDOWN_MS,
+  QUEUE_TEXT,
+  throttleMaxMs, queueThrottleCooldownMs,
   unescapeDeep,
   traeCodeKind, traeCodeOf,
 };
+
+// 兼容取值的懒代理：`QUEUE_THROTTLE_COOLDOWN_MS` / `THROTTLE_MAX_MS` 在既有
+// 代码（含离线脚本 verify-qoder-throttle.js）里是**值引用**，改成函数会静默
+// 变成 NaN 比较。用 getter 保留原写法，同时每次读都拿到当前生效值
+// （P0-3：面板改冷却上限后不必重启网关）。
+Object.defineProperty(module.exports, 'THROTTLE_MAX_MS', {
+  enumerable: true, get: () => throttleMaxMs(),
+});
+Object.defineProperty(module.exports, 'QUEUE_THROTTLE_COOLDOWN_MS', {
+  enumerable: true, get: () => queueThrottleCooldownMs(),
+});

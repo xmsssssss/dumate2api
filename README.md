@@ -193,6 +193,8 @@ curl.exe http://127.0.0.1:9080/v1/chat/completions `
 
 WorkBuddy 支持国内与国际区域，实际可用模型以管理端和 `GET /v1/models` 为准。Qoder 零额度时聊天可能挂起，使用前先确认签到与余额；其模型倍率差异较大，调试时优先选择低倍率档。
 
+通道配置与自动签到（默认关闭）见 [Qoder 指南](docs/CHANNEL-QODER.md) 和 [WorkBuddy 指南](docs/CHANNEL-WORKBUDDY.md)。
+
 ## 客户端配置
 
 | 客户端 | API 格式 | Base URL | Key | 模型 |
@@ -330,6 +332,8 @@ start-dev.bat
 完整变量表与通道协议说明见 [CLAUDE.md](CLAUDE.md) 和 `docs/CHANNEL-*.md`。
 
 ## 测试与验证
+
+完整离线测试建议使用 Node.js 24；新增的前端工具测试需要 Node.js 支持直接加载 TypeScript。
 
 ```bash
 npm test            # 离线 Node 单元测试

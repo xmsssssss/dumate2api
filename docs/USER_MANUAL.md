@@ -246,6 +246,7 @@ Anthropic 协议接入 `http://127.0.0.1:9080`（裸路径 `/messages` 已支持
 ### 签到
 
 - **手动**：管理端「账号管理」逐账号签到，或「登录态」页按通道签到（TRAE / Qoder / WorkBuddy 国内版）。
+- **Qoder / WorkBuddy 自动签到**：默认关闭，可在各通道的运行配置中启用。配置说明见 [Qoder 指南](CHANNEL-QODER.md) 和 [WorkBuddy 指南](CHANNEL-WORKBUDDY.md)。
 - **自动**：设环境变量后每日定时执行（默认 9:17）：
   ```bash
   DUMATE_AUTO_CHECKIN_HOUR=9 DUMATE_AUTO_CHECKIN_MINUTE=17   # 两个都要设
@@ -335,7 +336,8 @@ Anthropic 协议接入 `http://127.0.0.1:9080`（裸路径 `/messages` 已支持
 node test/probe-oai.js      # 只打 OpenAI 协议，原始 SSE 打到终端
 node test/probe-anth.js     # 只打 Anthropic 协议
 node test/verify-ccswitch.js  # Codex / Claude / 裸路径 / 模型映射四条链路
-npm test                    # 冒烟测试 32 项（需网关在线）
+npm test                    # 完整离线测试（建议 Node.js 24）
+npm run test:smoke          # 在线冒烟测试（需网关在线）
 ```
 
 各通道离线自测（不开管理端）：
