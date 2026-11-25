@@ -13,7 +13,7 @@ const dumateReasoning = require('./dumate-reasoning');
 const promptGuard = require('./prompt-guard');
 const media = require('./media');
 const { cachedTokensOf } = require('./usage-norm');
-const { resolveMaxTokens, resolveQwenMaxTokens, resolveTraeworkMaxTokens, resolveQoderMaxTokens } = require('./budget');
+const { resolveMaxTokens, resolveQwenMaxTokens, resolveTraeworkMaxTokens, resolveQoderMaxTokens, normalizeTokenFields } = require('./budget');
 const webFallback = require('./fallback-web');
 // dumate-points 伪模型（2026-11-07 融合项 P0-1）：网页池余额读数走 /v1 面，
 // 让 Codex / Claude Code 这类只看得到网关的 Agent 能自己查「还能跑多少」
@@ -688,7 +688,7 @@ function forwardToUpstream(portOrTarget, path, method, headers, body, callback) 
   // 两种调用形态：
   //   forwardToUpstream(8980, ...)                 ← 老签名，等价于搭子 target
   //   forwardToUpstream({host,port,basePath,...})  ← 路由后的 target
-  // 保留老签名是因为 stable/ 快照与外部调用点都按数字端口写，改签名会波及
+  // 保留老签名是因为外部调用点都按数字端口写，改签名会波及
   // 到不该动的代码。归一化放在这里，调用方不用关心。
   const t = (typeof portOrTarget === 'object' && portOrTarget !== null)
     ? portOrTarget
@@ -1758,6 +1758,12 @@ async function handleOpenAIChat(req, res) {
     return sendJSON(res, 400, { error: { message: 'Invalid JSON body', type: 'invalid_request_error' } });
   }
 
+  // 客户端 token 字段归一（实机原因见 src/budget.js:normalizeTokenFields）：
+  // 上游只认 max_tokens——两个都发会被明文拒绝（400），只发
+  // max_completion_tokens 则预算字段被整个丢弃。必须在 resolveMaxTokens 之前做，
+  // 否则预算取的是默认值而不是客户端要的值。
+  normalizeTokenFields(reqBody);
+
   const info = reqlog.describeRequest(reqBody);
   req._logPath = '/v1/chat/completions';
 
@@ -2664,7 +2670,7 @@ const server = http.createServer(async (req, res) => {
     // Health check
     if (url === '/health' || url === '/ping') {
       // 进程身份（2026-11-07 融合项 P1-6）：service 是品牌级判据，role 区分
-      // 入口（gateway / gateway-stable）。响应头同步带 X-Service——只看 JSON
+      // 入口（gateway / admin / web-gateway）。响应头同步带 X-Service——只看 JSON
       // 的探测方读字段，看头的负载均衡读头。强校验用带 Key 的 /v1/models，
       // 弱校验判 service 字段（与 workbuddy2api 面板同口径）。
       const identity = serviceIdentity.identity('gateway');

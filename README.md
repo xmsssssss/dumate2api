@@ -254,6 +254,8 @@ pnpm --dir web install
 pnpm --dir web run build
 ```
 
+也可以用 npm：在项目根目录执行 `npm install`，再执行 `npm --prefix web install` 和 `npm --prefix web run build`。同一份检出请选定一种包管理器，不要混用锁文件。
+
 终端一启动内部模型网关：
 
 ```powershell
@@ -279,7 +281,7 @@ Windows 日常开发可以使用：
 start-dev.bat
 ```
 
-该脚本同时启动公开入口 `9080` 和内部模型网关 `18081`。
+`start-dev.bat` 和 Windows 托盘入口 `launcher/dumate2api-tray.vbs` 都运行同一份 `src/`，对外只访问 `9080`，内部网关监听 `127.0.0.1:18081`。旧的 `stable/` 快照和独立启动入口已退役；账号与密钥仍使用原数据目录。
 
 ## 管理端
 

@@ -35,6 +35,7 @@ process.env.DUMATE_POOL_STATE = path.join(DATA, 'pool-state.json');
 const keepalive = require('../../src/keepalive');
 const expiringSnap = require('../../src/expiring');
 const creditsSnap = require('../../src/workbuddy/credits-snapshot');
+const channelPool = require('../../src/channel-pool');
 
 const DAY = 86400000;
 
@@ -67,7 +68,7 @@ test('adapter 暴露 persistSnapshots（否则 keepalive 阶段 4.5 会静默跳
   assert.equal(typeof impl, 'function', 'workbuddy adapter 必须暴露 persistSnapshots');
 });
 
-test('端到端：runOnce 后 FEFO 与护栏两份快照都被写入', async () => {
+test('端到端：runOnce 后写入 FEFO、护栏及账号池额度', async () => {
   const now = Date.now();
   const ads = [{
     channel: 'workbuddy',
@@ -89,6 +90,9 @@ test('端到端：runOnce 后 FEFO 与护栏两份快照都被写入', async () 
   const wb = r.snapshots.workbuddy;
   assert.equal(wb.fefoWrote, true);
   assert.equal(wb.guardWrote, true);
+  assert.equal(wb.creditsWrote, 1);
+  assert.equal(channelPool.creditsOf('workbuddy', 1).credits, 100.5);
+  assert.equal(channelPool.creditsOf('workbuddy', 2).credits, null);
   assert.equal(wb.entries, 1, '只有账号 1 有窗口内到期');
   assert.equal(wb.failed, 1, '账号 2 查询失败');
 

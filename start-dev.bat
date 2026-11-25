@@ -8,10 +8,9 @@ echo    Public   9080  (admin UI + model API)
 echo    Internal 18081 (loopback-only model gateway)
 echo ================================================
 echo.
-echo  This script uses the working tree in this repo (changes often).
-echo  For the stable snapshot use stable\start-stable.bat.
+echo  This script runs both services from src/.
 echo.
-rem KEEP THIS FILE PURE ASCII -- see the long note in stable\start-stable.bat.
+rem KEEP THIS FILE PURE ASCII.
 rem cmd.exe parses .bat by byte offset; under chcp 65001 a multi-byte char can
 rem desync it and get part of a line executed as a command (non-deterministic).
 cd /d "%~dp0"
@@ -38,6 +37,7 @@ rem Admin runs in the background of THIS console (`start /b`), so its output
 rem interleaves here instead of taking a second window. Both processes share
 rem the console, so closing this window stops both.
 echo Starting admin (9080, watching 18081) in background...
+set DUMATE_ADMIN_HOST=127.0.0.1
 set DUMATE_ADMIN_PORT=9080
 set DUMATE_ADMIN_GATEWAY_PORT=18081
 start /b "" node src\admin\server.js
@@ -55,6 +55,7 @@ echo   Ctrl+C or close this window to stop both.
 echo ================================================
 echo.
 
+set DUMATE2API_HOST=127.0.0.1
 set DUMATE2API_PORT=18081
 rem Authentication is always enabled. DUMATE_REQUIRE_KEY cannot disable it.
 node src\server.js
